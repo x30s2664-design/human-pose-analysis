@@ -308,3 +308,43 @@ COCO 不包含 table-tennis paddle / ping-pong paddle，所以 V12 提供
 - 綠色：已確認持物。
 - 橘色：手動框選但尚未靠近手腕。
 - 手動框選靠近手腕後會轉為綠色。
+
+
+## V13：Contact-based Holding Detection
+
+V13 參考 100 Days of Hands / Hand Object Detector 的核心概念：
+「持物」不應只由 wrist-to-object distance 決定，而應判斷 hand-object contact。
+
+瀏覽器版沒有直接載入原研究的 Faster-RCNN/PyTorch 權重，因為該模型不是
+GitHub Pages 可直接執行的 MediaPipe Tasks 模型。因此 V13 採用可在瀏覽器
+即時執行的近似架構：
+
+- MediaPipe Pose Landmarker：人體骨架、本體、PPS。
+- MediaPipe Hand Landmarker：每手 21 個 landmarks。
+- EfficientDet Lite0：COCO 物件 bounding box。
+- Contact score：手指端點、掌心、手腕與物件框的空間接觸。
+- Temporal hysteresis：連續影格確認/釋放，降低閃爍與瞬間誤判。
+- Manual ROI fallback：桌球拍、筆或未知工具不在 COCO 類別時可手動框選，
+  但仍由 Hand Landmarker 的接觸分數決定是否真的「持物」。
+
+### Contact score
+
+V13 使用以下瀏覽器端 heuristic：
+
+- 30%：最近手指端點到物件的距離
+- 25%：五個手指端點落在物件/容差框內的比例
+- 20%：掌心到物件距離
+- 15%：手腕到物件距離
+- 10%：拇指 + 其他手指的抓握接觸 cue
+
+分數 >= 0.50 才成為持物候選，之後仍需通過連續影格 hysteresis。
+
+這不是 100DOH 原模型的 contact-state classifier，而是依其「contact 而非純距離」
+概念改寫成可部署於純 GitHub Pages 的版本。
+
+### 已知限制
+
+EfficientDet Lite0 / COCO 沒有 table-tennis paddle 類別，因此無法靠降低
+confidence 自動得到桌球拍名稱。V13 對這類物件保留手動 ROI fallback。
+若需要「未知物件也全自動找框」，下一階段需要加入 open-vocabulary detector
+或自行訓練桌球拍/工具 detector。

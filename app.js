@@ -1,6 +1,7 @@
 import {
   FilesetResolver,
   PoseLandmarker,
+  HandLandmarker,
   ObjectDetector,
   DrawingUtils
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/+esm";
@@ -13,6 +14,9 @@ const MODEL_URL =
 
 const OBJECT_MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite";
+
+const HAND_MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
@@ -51,10 +55,14 @@ const manualBoxStatusEl = document.getElementById("manualBoxStatus");
 
 
 let poseLandmarker = null;
+let handLandmarker = null;
+let handLandmarkerLoading = false;
 let objectDetector = null;
 let objectDetectorLoading = false;
 let lastObjectDetectionAt = 0;
 let latestObjects = [];
+let latestHands = [];
+let lastHandDetectionAt = 0;
 let currentHoldCandidate = null;
 let holdConfirmFrames = 0;
 let holdMissFrames = 0;
@@ -79,6 +87,10 @@ let latestPoseLandmarks = null;
 // Mobile/tablet: limiting inference rate reduces heat and browser stalls.
 const MIN_INFERENCE_INTERVAL_MS = 85;
 const OBJECT_INFERENCE_INTERVAL_MS = 250;
+const HAND_INFERENCE_INTERVAL_MS = 100;
+
+// Contact-based holding threshold. Temporal hysteresis below still applies.
+const HOLDING_SCORE_THRESHOLD = 0.50;
 
 // Hysteresis: avoid extension flicker.
 // Detection must be confirmed across multiple object-detection cycles.
@@ -896,6 +908,239 @@ function showAnalysis(lm) {
 }
 
 
+
+async function initHandLandmarker() {
+  if (handLandmarker || handLandmarkerLoading) return;
+
+  handLandmarkerLoading = true;
+
+  try {
+    const vision = await FilesetResolver.forVisionTasks(WASM_URL);
+
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: HAND_MODEL_URL
+      },
+      runningMode: "VIDEO",
+      numHands: 2,
+      minHandDetectionConfidence: 0.35,
+      minHandPresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35
+    });
+  } catch (err) {
+    console.error("Hand landmarker init failed", err);
+  } finally {
+    handLandmarkerLoading = false;
+  }
+}
+
+function handPixels(handLm) {
+  if (!handLm?.length) return null;
+  return handLm.map(p => ({
+    x: p.x * canvas.width,
+    y: p.y * canvas.height
+  }));
+}
+
+function boxExpanded(box, pad) {
+  return {
+    originX: box.originX - pad,
+    originY: box.originY - pad,
+    width: box.width + pad * 2,
+    height: box.height + pad * 2
+  };
+}
+
+function pointInsideBox(p, box) {
+  return !!p && !!box &&
+    p.x >= box.originX &&
+    p.x <= box.originX + box.width &&
+    p.y >= box.originY &&
+    p.y <= box.originY + box.height;
+}
+
+function poseWristPoint(lm, hand) {
+  return wristPixels(lm, hand);
+}
+
+function assignDetectedHandsToPose(lm) {
+  const result = { left: null, right: null };
+  if (!lm || !latestHands?.length) return result;
+
+  const poseWrists = {
+    left: poseWristPoint(lm, "left"),
+    right: poseWristPoint(lm, "right")
+  };
+
+  const candidates = latestHands
+    .map((handLm, idx) => {
+      const pts = handPixels(handLm);
+      return pts ? { idx, pts, wrist: pts[0] } : null;
+    })
+    .filter(Boolean);
+
+  // Geometry-based matching is robust to front-camera mirroring and
+  // handedness-label ambiguity.
+  const pairs = [];
+  for (const h of candidates) {
+    for (const side of ["left", "right"]) {
+      const pw = poseWrists[side];
+      if (!pw) continue;
+      pairs.push({
+        handIdx: h.idx,
+        side,
+        distance: Math.hypot(h.wrist.x - pw.x, h.wrist.y - pw.y),
+        pts: h.pts
+      });
+    }
+  }
+  pairs.sort((a, b) => a.distance - b.distance);
+
+  const usedHands = new Set();
+  const usedSides = new Set();
+  for (const pair of pairs) {
+    if (usedHands.has(pair.handIdx) || usedSides.has(pair.side)) continue;
+    result[pair.side] = pair.pts;
+    usedHands.add(pair.handIdx);
+    usedSides.add(pair.side);
+  }
+
+  return result;
+}
+
+function handObjectContactFeatures(handPts, box, bodyWidth) {
+  if (!handPts || !box) return null;
+
+  const pad = Math.max(10, bodyWidth * 0.045);
+  const expanded = boxExpanded(box, pad);
+
+  // MediaPipe Hands: thumb tip=4, index=8, middle=12, ring=16, pinky=20.
+  const fingertips = [4, 8, 12, 16, 20]
+    .map(i => handPts[i])
+    .filter(Boolean);
+
+  const palmIds = [0, 5, 9, 13, 17];
+  const palmPts = palmIds.map(i => handPts[i]).filter(Boolean);
+  const palmCenter = palmPts.length
+    ? {
+        x: palmPts.reduce((s, p) => s + p.x, 0) / palmPts.length,
+        y: palmPts.reduce((s, p) => s + p.y, 0) / palmPts.length
+      }
+    : handPts[0];
+
+  const wrist = handPts[0];
+
+  const fingertipHits = fingertips.filter(p => pointInsideBox(p, expanded)).length;
+  const fingertipRatio = fingertips.length ? fingertipHits / fingertips.length : 0;
+
+  const minTipDistance = fingertips.length
+    ? Math.min(...fingertips.map(p => pointToBoxDistance(p, box, pad)))
+    : 9999;
+
+  const wristDistance = pointToBoxDistance(wrist, box, pad);
+  const palmDistance = pointToBoxDistance(palmCenter, box, pad);
+
+  const scale = Math.max(24, bodyWidth * 0.16);
+  const proximityScore = Math.max(0, 1 - minTipDistance / scale);
+  const wristScore = Math.max(0, 1 - wristDistance / (scale * 1.25));
+  const palmScore = Math.max(0, 1 - palmDistance / (scale * 1.15));
+
+  // Pinch/contact cue: thumb + at least one finger touching the object region.
+  const thumbHit = pointInsideBox(handPts[4], expanded) ? 1 : 0;
+  const opposingHit = [8, 12, 16, 20].some(i => pointInsideBox(handPts[i], expanded)) ? 1 : 0;
+  const gripCue = thumbHit && opposingHit ? 1 : Math.max(thumbHit, opposingHit) * 0.45;
+
+  // Inspired by hand-object contact pipelines: use hand/object spatial
+  // contact, not wrist distance alone. Hysteresis supplies temporal stability.
+  const score =
+    0.30 * proximityScore +
+    0.25 * fingertipRatio +
+    0.20 * palmScore +
+    0.15 * wristScore +
+    0.10 * gripCue;
+
+  return {
+    score,
+    fingertipHits,
+    fingertipRatio,
+    minTipDistance,
+    wristDistance,
+    palmDistance,
+    gripCue
+  };
+}
+
+function holdingCandidateForDetection(lm, b, det) {
+  const cat = categoryOfDetection(det);
+  if (!cat || !EXTENDABLE_OBJECT_LABELS.has(cat.name)) return null;
+
+  const box = det?.boundingBox;
+  if (!box) return null;
+
+  const bodyWidth =
+    visible(lm, 11) && visible(lm, 12)
+      ? Math.hypot(
+          (lm[11].x - lm[12].x) * canvas.width,
+          (lm[11].y - lm[12].y) * canvas.height
+        )
+      : Math.max(60, b.w * 0.4);
+
+  const mappedHands = assignDetectedHandsToPose(lm);
+  let best = null;
+
+  for (const side of ["left", "right"]) {
+    const handPts = mappedHands[side];
+
+    if (handPts) {
+      const f = handObjectContactFeatures(handPts, box, bodyWidth);
+      if (!f || f.score < HOLDING_SCORE_THRESHOLD) continue;
+
+      // Detector confidence and contact score both matter.
+      const rank = f.score * 3 + cat.score;
+
+      if (!best || rank > best.rank) {
+        best = {
+          label: cat.name,
+          confidence: cat.score,
+          hand: side,
+          distance: f.minTipDistance,
+          contactScore: f.score,
+          fingertipHits: f.fingertipHits,
+          detection: det,
+          rank,
+          contactBased: true
+        };
+      }
+      continue;
+    }
+
+    // Fallback only when Hand Landmarker cannot see the hand.
+    const wrist = wristPixels(lm, side);
+    const relation = wristTouchesObject(wrist, det, bodyWidth);
+    if (!relation?.touches) continue;
+
+    const fallbackScore = Math.max(0, 0.45 - relation.distance / Math.max(1, bodyWidth));
+    if (fallbackScore < 0.25) continue;
+
+    const rank = cat.score + fallbackScore;
+    if (!best || rank > best.rank) {
+      best = {
+        label: cat.name,
+        confidence: cat.score,
+        hand: side,
+        distance: relation.distance,
+        contactScore: fallbackScore,
+        fingertipHits: 0,
+        detection: det,
+        rank,
+        contactBased: false
+      };
+    }
+  }
+
+  return best;
+}
+
 async function initObjectDetector() {
   if (objectDetector || objectDetectorLoading) return;
 
@@ -1002,47 +1247,12 @@ function categoryOfDetection(det) {
 function findHeldObjectNearHands(lm, b, detections) {
   if (!lm || !b || !detections?.length) return null;
 
-  const wrists = [];
-  const lw = wristPixels(lm, "left");
-  const rw = wristPixels(lm, "right");
-  if (lw) wrists.push({ hand: "left", ...lw });
-  if (rw) wrists.push({ hand: "right", ...rw });
-  if (!wrists.length) return null;
-
-  const bodyWidth =
-    visible(lm, 11) && visible(lm, 12)
-      ? Math.hypot(
-          (lm[11].x - lm[12].x) * canvas.width,
-          (lm[11].y - lm[12].y) * canvas.height
-        )
-      : Math.max(60, b.w * 0.4);
-
   let best = null;
-
   for (const det of detections) {
-    const cat = categoryOfDetection(det);
-    if (!cat || !EXTENDABLE_OBJECT_LABELS.has(cat.name)) continue;
-
-    for (const wrist of wrists) {
-      const relation = wristTouchesObject(wrist, det, bodyWidth);
-      if (!relation?.touches) continue;
-
-      // Prefer high confidence and closer wrist/object contact.
-      const rank = cat.score * 3 - relation.distance / Math.max(1, bodyWidth);
-
-      if (!best || rank > best.rank) {
-        best = {
-          label: cat.name,
-          confidence: cat.score,
-          hand: wrist.hand,
-          distance: relation.distance,
-          detection: det,
-          rank
-        };
-      }
-    }
+    const candidate = holdingCandidateForDetection(lm, b, det);
+    if (!candidate) continue;
+    if (!best || candidate.rank > best.rank) best = candidate;
   }
-
   return best;
 }
 function updateHoldState(candidate) {
@@ -1081,14 +1291,31 @@ function updateHoldState(candidate) {
   if (objectDetectionStatusEl) {
     if (confirmedHeldObject) {
       const pct = Math.round(confirmedHeldObject.confidence * 100);
+      const contactPct = Math.round((confirmedHeldObject.contactScore || 0) * 100);
       objectDetectionStatusEl.textContent =
-        `已確認：${confirmedHeldObject.label}・${confirmedHeldObject.hand === "left" ? "左手" : "右手"}・${pct}%`;
+        `已確認：${confirmedHeldObject.label}・${confirmedHeldObject.hand === "left" ? "左手" : "右手"}・物件 ${pct}%・接觸 ${contactPct}%`;
     } else if (candidate) {
       objectDetectionStatusEl.textContent =
         `確認中：${candidate.label}`;
     } else {
       objectDetectionStatusEl.textContent = latestObjects?.length ? "已偵測物件，等待手腕關聯" : "未偵測持物";
     }
+  }
+}
+
+
+function detectHandsIfNeeded(nowMs) {
+  if (extensionModeEl?.value !== "auto") return;
+  if (!handLandmarker) return;
+  if (nowMs - lastHandDetectionAt < HAND_INFERENCE_INTERVAL_MS) return;
+
+  lastHandDetectionAt = nowMs;
+
+  try {
+    const result = handLandmarker.detectForVideo(video, performance.now());
+    latestHands = result?.landmarks || [];
+  } catch (err) {
+    console.warn("Hand landmark detection failed", err);
   }
 }
 
@@ -1295,7 +1522,10 @@ async function startAnalysis() {
     await initPoseModel();
 
     if (extensionModeEl?.value === "auto") {
-      await initObjectDetector();
+      await Promise.all([
+        initHandLandmarker(),
+        initObjectDetector()
+      ]);
     }
 
     await openCamera({ facing: facingMode });
@@ -1331,6 +1561,8 @@ function stopAnalysis() {
   holdConfirmFrames = 0;
   holdMissFrames = 0;
   latestPoseLandmarks = null;
+  latestHands = [];
+  lastHandDetectionAt = 0;
   manualObjectBox = null;
   endManualBoxMode();
   if (objectDetectionStatusEl) {
@@ -1472,17 +1704,56 @@ function manualHeldObject(lm, b) {
         )
       : Math.max(60, b.w * 0.4);
 
-  const allowed = Math.max(35, bodyWidth * 0.22);
+  const mappedHands = assignDetectedHandsToPose(lm);
+  let best = null;
 
+  for (const side of ["left", "right"]) {
+    const handPts = mappedHands[side];
+    if (!handPts) continue;
+
+    const f = handObjectContactFeatures(handPts, manualObjectBox, bodyWidth);
+    if (!f) continue;
+
+    if (!best || f.score > best.contactScore) {
+      best = {
+        hand: side,
+        distance: f.minTipDistance,
+        contactScore: f.score,
+        fingertipHits: f.fingertipHits
+      };
+    }
+  }
+
+  if (best) {
+    return {
+      label: "manual object",
+      confidence: 1,
+      hand: best.hand,
+      distance: best.distance,
+      contactScore: best.contactScore,
+      fingertipHits: best.fingertipHits,
+      detection: manualDetectionFromBox(),
+      rank: 999,
+      validGrip: best.contactScore >= HOLDING_SCORE_THRESHOLD,
+      manual: true,
+      contactBased: true
+    };
+  }
+
+  // Pose-wrist fallback if the hand model temporarily loses the hand.
+  const allowed = Math.max(35, bodyWidth * 0.22);
   return {
     label: "manual object",
     confidence: 1,
     hand: nearest.hand,
     distance: nearest.distance,
+    contactScore: Math.max(0, 0.4 - nearest.distance / Math.max(1, bodyWidth)),
+    fingertipHits: 0,
     detection: manualDetectionFromBox(),
     rank: 999,
     validGrip: nearest.distance <= allowed,
-    manual: true
+    manual: true,
+    contactBased: false
   };
 }
 
@@ -1758,6 +2029,7 @@ function predict(now) {
     if (result?.landmarks?.[0]) {
       const b = bodyBounds(result.landmarks[0]);
       if (b) {
+        detectHandsIfNeeded(now);
         detectObjectsIfNeeded(now, result.landmarks[0], b);
       }
     }
@@ -1799,8 +2071,9 @@ function updateExtensionMode() {
     if (objectDetectionStatusEl) objectDetectionStatusEl.textContent =
       objectDetector ? "未偵測持物" : "等待載入物件模型";
 
-    if (running && !objectDetector) {
-      initObjectDetector();
+    if (running) {
+      if (!handLandmarker) initHandLandmarker();
+      if (!objectDetector) initObjectDetector();
     }
   }
 }

@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>人體姿態與空間分析</title>
-  <link rel="stylesheet" href="style.css?v=12" />
+  <link rel="stylesheet" href="style.css?v=13" />
 </head>
 <body>
   <main>
@@ -114,7 +114,7 @@
 
         <small class="extension-note">
           自動模式：連續偵測到持物且位置接近手腕才啟用展延；空手時自動關閉。
-          <br>框線：綠色＝已確認持物、黃色＝持物候選、藍色＝已偵測物件。自動模式的展延方向直接依物件框，不再依前臂方向猜測。若模型不支援桌球拍等類別，可按「手動框選持物」拖曳框出物件；只有框靠近手腕才視為持物。
+          <br>框線：綠色＝已確認持物、黃色＝持物候選、藍色＝已偵測物件。自動模式的展延方向直接依物件框，不再依前臂方向猜測。若模型不支援桌球拍等類別，可按「手動框選持物」拖曳框出物件；自動模式會使用手掌、五指端點與物件框的接觸分數判斷持物；桌球拍等模型未收錄類別可手動框選，手動框也使用同一套手部接觸判斷。
         </small>
       </div>
     </section>
@@ -134,6 +134,6 @@
     </p>
   </main>
 
-  <script type="module" src="app.js?v=12"></script>
+  <script type="module" src="app.js?v=13"></script>
 </body>
 </html>
