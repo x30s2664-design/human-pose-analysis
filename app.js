@@ -96,6 +96,9 @@ const HOLDING_SCORE_THRESHOLD = 0.50;
 // Detection must be confirmed across multiple object-detection cycles.
 const HOLD_CONFIRM_CYCLES = 2;
 const HOLD_RELEASE_CYCLES = 4;
+const GRIP_PROXY_CONFIRM_CYCLES = 3;
+const GRIP_PROXY_THRESHOLD = 0.64;
+
 
 // COCO / EfficientDet Lite0 supported categories that can plausibly extend action space.
 // Tennis racket is the primary target. Pen is not a COCO class, so pen remains manual/custom.
@@ -417,6 +420,50 @@ function drawExtensionZone(lm, b) {
   } else if (mode === "auto" && manualObjectBox) {
     const manualHeld = manualHeldObject(lm, b);
     if (manualHeld?.validGrip) autoHeld = manualHeld;
+  }
+
+  if (mode === "auto" && confirmedHeldObject?.gripProxy) {
+    const g = gripProxyGeometry(lm, hand, confirmedHeldObject, b);
+
+    if (g) {
+      const { start, end, wrist } = g;
+      const radius = Math.max(10, bodyReferenceWidth(lm, b) * preset.width * 0.72);
+
+      ctx.save();
+      drawRoundedCapsule(start, end, radius);
+      ctx.fillStyle = "rgba(65, 235, 145, 0.08)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(75, 240, 150, 0.92)";
+      ctx.lineWidth = Math.max(2, canvas.width / 480);
+      ctx.setLineDash([9, 7]);
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(wrist.x, wrist.y);
+      ctx.lineTo(start.x, start.y);
+      ctx.strokeStyle = "rgba(120, 255, 180, 0.88)";
+      ctx.lineWidth = Math.max(2, canvas.width / 650);
+      ctx.stroke();
+
+      const fontSize = Math.max(14, Math.round(canvas.width / 62));
+      ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+      ctx.textBaseline = "bottom";
+      ctx.fillStyle = "rgba(120, 255, 180, 0.98)";
+      ctx.fillText(
+        `握持姿態推定 ${preset.label}`,
+        clamp(end.x + 8, 8, canvas.width - fontSize * 9),
+        clamp(end.y - 8, fontSize + 8, canvas.height - 8)
+      );
+      ctx.restore();
+
+      if (extensionStatusEl) {
+        const gripPct = Math.round((confirmedHeldObject.contactScore || 0) * 100);
+        extensionStatusEl.textContent =
+          `${hand === "left" ? "左手" : "右手"}・${preset.label}・握持推定 ${gripPct}%`;
+      }
+      return;
+    }
   }
 
   if (mode === "auto" && autoHeld?.detection) {
@@ -851,7 +898,211 @@ function drawMannequinBody(lm, b) {
   for (const p of [p27, p28]) drawJointDisc(p, ankleR, joint, redEdge);
 }
 
-function drawSpaceZones(lm) {
+
+function segmentationBodyMask(result) {
+  const mpMask = result?.segmentationMasks?.[0];
+  if (!mpMask || typeof mpMask.getAsFloat32Array !== "function") return null;
+
+  let values;
+  try {
+    values = mpMask.getAsFloat32Array();
+  } catch (err) {
+    console.warn("Segmentation mask unavailable", err);
+    return null;
+  }
+
+  if (!values?.length) return null;
+
+  const sourceW = Number(mpMask.width || canvas.width);
+  const sourceH = Number(mpMask.height || canvas.height);
+  if (!sourceW || !sourceH) return null;
+
+  // Build at half resolution for mobile speed, then scale back up.
+  const targetW = Math.max(1, Math.round(sourceW / 2));
+  const targetH = Math.max(1, Math.round(sourceH / 2));
+  const small = document.createElement("canvas");
+  small.width = targetW;
+  small.height = targetH;
+  const sctx = small.getContext("2d");
+  const img = sctx.createImageData(targetW, targetH);
+
+  for (let y = 0; y < targetH; y++) {
+    const sy = Math.min(sourceH - 1, Math.floor(y * sourceH / targetH));
+    for (let x = 0; x < targetW; x++) {
+      const sx = Math.min(sourceW - 1, Math.floor(x * sourceW / targetW));
+      const confidence = values[sy * sourceW + sx] || 0;
+      const alpha = confidence >= 0.48 ? 255 : confidence >= 0.30 ? 150 : 0;
+      const i = (y * targetW + x) * 4;
+      img.data[i] = 255;
+      img.data[i + 1] = 255;
+      img.data[i + 2] = 255;
+      img.data[i + 3] = alpha;
+    }
+  }
+
+  sctx.putImageData(img, 0, 0);
+
+  const full = newMaskCanvas();
+  const fctx = full.getContext("2d");
+  fctx.imageSmoothingEnabled = true;
+  fctx.drawImage(small, 0, 0, full.width, full.height);
+  return full;
+}
+
+function dilateMask(mask, radius) {
+  const out = newMaskCanvas();
+  const octx = out.getContext("2d");
+  const r = Math.max(0, radius);
+
+  if (!mask || r <= 0.5) {
+    if (mask) octx.drawImage(mask, 0, 0);
+    return out;
+  }
+
+  // Morphological-style dilation using repeated circular offsets.
+  // This follows the actual silhouette far better than widening pose bones.
+  const samples = 24;
+  octx.globalAlpha = 1;
+  octx.drawImage(mask, 0, 0);
+
+  for (let i = 0; i < samples; i++) {
+    const a = i / samples * Math.PI * 2;
+    const dx = Math.cos(a) * r;
+    const dy = Math.sin(a) * r;
+    octx.drawImage(mask, dx, dy);
+  }
+
+  // Add a middle ring to close small holes.
+  const r2 = r * 0.55;
+  for (let i = 0; i < 12; i++) {
+    const a = i / 12 * Math.PI * 2;
+    octx.drawImage(mask, Math.cos(a) * r2, Math.sin(a) * r2);
+  }
+
+  return out;
+}
+
+function handGripFeatures(handPts) {
+  if (!handPts?.length) return null;
+
+  const wrist = handPts[0];
+  const mcpIds = [5, 9, 13, 17];
+  const tipIds = [4, 8, 12, 16, 20];
+  const mcps = mcpIds.map(i => handPts[i]).filter(Boolean);
+  const tips = tipIds.map(i => handPts[i]).filter(Boolean);
+  if (!wrist || mcps.length < 3 || tips.length < 4) return null;
+
+  const palmCenter = {
+    x: mcps.reduce((s, p) => s + p.x, 0) / mcps.length,
+    y: mcps.reduce((s, p) => s + p.y, 0) / mcps.length
+  };
+
+  const palmSize = Math.max(
+    8,
+    mcps.reduce((s, p) => s + Math.hypot(p.x - wrist.x, p.y - wrist.y), 0) / mcps.length
+  );
+
+  const tipPalm = tips.map(p => Math.hypot(p.x - palmCenter.x, p.y - palmCenter.y) / palmSize);
+  const curlScore = tipPalm.reduce((s, d) => s + clamp(1.35 - d, 0, 1), 0) / tipPalm.length;
+
+  const thumb = handPts[4];
+  const index = handPts[8];
+  const middle = handPts[12];
+  const pinchD = thumb && index ? Math.hypot(thumb.x - index.x, thumb.y - index.y) / palmSize : 2;
+  const thumbOpposition = clamp(1.20 - pinchD, 0, 1);
+
+  const compactness = middle
+    ? clamp(1.55 - Math.hypot(middle.x - wrist.x, middle.y - wrist.y) / palmSize, 0, 1)
+    : 0;
+
+  const score =
+    0.58 * curlScore +
+    0.24 * thumbOpposition +
+    0.18 * compactness;
+
+  const axisDx = palmCenter.x - wrist.x;
+  const axisDy = palmCenter.y - wrist.y;
+  const axisLen = Math.hypot(axisDx, axisDy);
+
+  return {
+    score,
+    curlScore,
+    thumbOpposition,
+    compactness,
+    wrist,
+    palmCenter,
+    axis: axisLen > 1
+      ? { dx: axisDx / axisLen, dy: axisDy / axisLen }
+      : null
+  };
+}
+
+function findGripProxyCandidate(lm, b) {
+  if (!lm || !b || !latestHands?.length) return null;
+
+  // Grip-only fallback must never pretend it recognized an object.
+  // It is enabled only when the user explicitly selected a physical tool type.
+  const selectedTool = toolTypeEl?.value || "unknown";
+  if (selectedTool === "unknown" || selectedTool === "custom") return null;
+
+  const mapped = assignDetectedHandsToPose(lm);
+  let best = null;
+
+  for (const side of ["left", "right"]) {
+    const pts = mapped[side];
+    if (!pts) continue;
+
+    const f = handGripFeatures(pts);
+    if (!f || f.score < GRIP_PROXY_THRESHOLD || !f.axis) continue;
+
+    // Prefer the hand extending farther from the body center.
+    const wrist = wristPixels(lm, side);
+    if (!wrist) continue;
+    const extension = Math.hypot(wrist.x - b.cx, wrist.y - b.cy) /
+      Math.max(40, bodyReferenceWidth(lm, b));
+
+    const rank = f.score * 2 + clamp(extension / 2.2, 0, 1);
+
+    if (!best || rank > best.rank) {
+      best = {
+        label: "grip proxy",
+        displayLabel: "握持姿態推定",
+        confidence: 0,
+        hand: side,
+        contactScore: f.score,
+        fingertipHits: 0,
+        detection: null,
+        rank,
+        contactBased: false,
+        genericObject: true,
+        gripProxy: true,
+        gripFeatures: f
+      };
+    }
+  }
+
+  return best;
+}
+
+function gripProxyGeometry(lm, hand, held, b) {
+  const f = held?.gripFeatures;
+  if (!f?.axis) return null;
+
+  const preset = TOOL_PRESETS[resolvedToolType()] || TOOL_PRESETS.unknown;
+  const lengthPx = Math.max(40, b.h * preset.scale);
+  const start = {
+    x: f.palmCenter.x,
+    y: f.palmCenter.y
+  };
+  const end = {
+    x: start.x + f.axis.dx * lengthPx,
+    y: start.y + f.axis.dy * lengthPx
+  };
+
+  return { start, end, wrist: f.wrist };
+}
+
+function drawSpaceZones(lm, result = null) {
   const b = bodyBounds(lm);
   if (!b) return;
 
@@ -859,31 +1110,44 @@ function drawSpaceZones(lm) {
   const scale = parseFloat(ppsScaleEl?.value || "0.18");
   const ppsMargin = Math.max(10, refW * scale);
 
-  const ppsMask = buildBodyMask(lm, b, ppsMargin);
-  const bodyMask = buildBodyMask(lm, b, 0);
+  // Prefer the actual Pose Landmarker human segmentation mask.
+  // Fall back to the articulated reconstruction when segmentation is absent.
+  const segmentedBody = segmentationBodyMask(result);
+  const bodyMask = segmentedBody || buildBodyMask(lm, b, 0);
+  const ppsMask = segmentedBody
+    ? dilateMask(segmentedBody, ppsMargin)
+    : buildBodyMask(lm, b, ppsMargin);
 
-  // FAR SPACE = everything outside the expanded PPS envelope.
-  // This makes the classification geometrically explicit instead of applying
-  // an almost invisible blue tint to the whole frame.
+  // FAR SPACE = everything outside the PPS envelope.
   const farLayer = newMaskCanvas();
   const fctx = farLayer.getContext("2d");
-  fctx.fillStyle = "rgba(70, 125, 235, 0.105)";
+  fctx.fillStyle = "rgba(70, 125, 235, 0.17)";
   fctx.fillRect(0, 0, farLayer.width, farLayer.height);
   fctx.globalCompositeOperation = "destination-out";
   fctx.drawImage(ppsMask, 0, 0);
   fctx.globalCompositeOperation = "source-over";
   ctx.drawImage(farLayer, 0, 0);
 
-  // PPS RING = expanded body envelope minus the body itself.
+  // Draw a subtle PPS outer boundary so the far/peripersonal transition
+  // remains visible even on bright backgrounds.
+  ctx.save();
+  ctx.globalAlpha = 0.50;
+  ctx.drawImage(ppsMask, 0, 0);
+  ctx.globalCompositeOperation = "source-in";
+  ctx.strokeStyle = "rgba(255, 225, 100, 0.95)";
+  ctx.lineWidth = Math.max(1.5, canvas.width / 700);
+  ctx.restore();
+
+  // PPS RING = expanded body envelope minus actual body silhouette.
   const ppsRing = newMaskCanvas();
   const prctx = ppsRing.getContext("2d");
   prctx.drawImage(ppsMask, 0, 0);
   prctx.globalCompositeOperation = "destination-out";
   prctx.drawImage(bodyMask, 0, 0);
   prctx.globalCompositeOperation = "source-over";
-  paintMaskColor(ppsRing, "rgba(255, 214, 70, 0.22)");
+  paintMaskColor(ppsRing, "rgba(255, 214, 70, 0.25)");
 
-  // Body is rendered separately as articulated mannequin blocks.
+  // Keep the articulated body visualization on top of the true silhouette.
   drawMannequinBody(lm, b);
 
   const fontSize = Math.max(13, Math.round(canvas.width / 70));
@@ -899,7 +1163,7 @@ function drawSpaceZones(lm) {
   ctx.fillText("近體 PPS", clamp(b.maxX - 85, 8, canvas.width - 105),
                clamp(b.minY - ppsMargin * 0.45, 8, canvas.height - 26));
 
-  ctx.fillStyle = "rgba(155, 195, 255, 0.98)";
+  ctx.fillStyle = "rgba(170, 205, 255, 1)";
   ctx.fillText("遠體", 12, canvas.height - fontSize - 12);
   ctx.restore();
 
@@ -1314,7 +1578,11 @@ function updateHoldState(candidate) {
       holdConfirmFrames = 1;
     }
 
-    if (holdConfirmFrames >= HOLD_CONFIRM_CYCLES) {
+    const requiredCycles = candidate.gripProxy
+      ? GRIP_PROXY_CONFIRM_CYCLES
+      : HOLD_CONFIRM_CYCLES;
+
+    if (holdConfirmFrames >= requiredCycles) {
       confirmedHeldObject = candidate;
     }
   } else {
@@ -1334,16 +1602,23 @@ function updateHoldState(candidate) {
     if (confirmedHeldObject) {
       const pct = Math.round(confirmedHeldObject.confidence * 100);
       const contactPct = Math.round((confirmedHeldObject.contactScore || 0) * 100);
-      const shownLabel = confirmedHeldObject.genericObject
-        ? `未知持物 / ${confirmedHeldObject.label}`
-        : confirmedHeldObject.label;
-      objectDetectionStatusEl.textContent =
-        `已確認：${shownLabel}・${confirmedHeldObject.hand === "left" ? "左手" : "右手"}・物件 ${pct}%・接觸 ${contactPct}%`;
+      if (confirmedHeldObject.gripProxy) {
+        objectDetectionStatusEl.textContent =
+          `握持姿態推定：${confirmedHeldObject.hand === "left" ? "左手" : "右手"}・${contactPct}%・無物件框`;
+      } else {
+        const shownLabel = confirmedHeldObject.genericObject
+          ? `未知持物 / ${confirmedHeldObject.label}`
+          : confirmedHeldObject.label;
+        objectDetectionStatusEl.textContent =
+          `已確認：${shownLabel}・${confirmedHeldObject.hand === "left" ? "左手" : "右手"}・物件 ${pct}%・接觸 ${contactPct}%`;
+      }
     } else if (candidate) {
       objectDetectionStatusEl.textContent =
-        `確認中：${candidate.genericObject ? `未知物件 / ${candidate.label}` : candidate.label}`;
+        candidate.gripProxy
+          ? `握持姿態確認中：${candidate.hand === "left" ? "左手" : "右手"}`
+          : `確認中：${candidate.genericObject ? `未知物件 / ${candidate.label}` : candidate.label}`;
     } else {
-      objectDetectionStatusEl.textContent = latestObjects?.length ? "已偵測物件，等待手腕關聯" : "未偵測持物";
+      objectDetectionStatusEl.textContent = latestObjects?.length ? "已偵測物件，等待手部接觸" : "未偵測持物";
     }
   }
 }
@@ -1374,7 +1649,15 @@ async function detectObjectsIfNeeded(nowMs, lm, b) {
   try {
     const result = objectDetector.detectForVideo(video, performance.now());
     latestObjects = result?.detections || [];
-    const candidate = findHeldObjectNearHands(lm, b, latestObjects);
+    let candidate = findHeldObjectNearHands(lm, b, latestObjects);
+
+    // Reference-inspired hybrid fallback:
+    // if the detector produces no usable held-object bbox, infer only
+    // "probable holding" from persistent hand-grip posture.
+    if (!candidate) {
+      candidate = findGripProxyCandidate(lm, b);
+    }
+
     updateHoldState(candidate);
   } catch (err) {
     console.warn("Object detection failed", err);
@@ -1456,7 +1739,8 @@ async function initPoseModel() {
     numPoses: 2,
     minPoseDetectionConfidence: 0.45,
     minPosePresenceConfidence: 0.45,
-    minTrackingConfidence: 0.45
+    minTrackingConfidence: 0.45,
+    outputSegmentationMasks: true
   });
 
   setStatus("模型已就緒 ✓", "請允許瀏覽器使用相機。");
@@ -1884,6 +2168,7 @@ function drawHeldObjectBoxes(lm) {
   // without showing where the detected object was.
   if (
     confirmedHeldObject?.detection &&
+    !confirmedHeldObject?.gripProxy &&
     !detectionsToDraw.some(d => sameDetection(d, confirmedHeldObject.detection))
   ) {
     detectionsToDraw.push(confirmedHeldObject.detection);
@@ -2030,7 +2315,7 @@ function drawResults(result) {
 
   // Draw space classification first, then the pose skeleton on top.
   if (result.landmarks[0]) {
-    drawSpaceZones(result.landmarks[0]);
+    drawSpaceZones(result.landmarks[0], result);
   }
 
   // V10: show detected held-object bounding boxes on top of the video.

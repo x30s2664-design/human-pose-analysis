@@ -380,3 +380,41 @@ V14 改為：
 ### 仍保留 fallback
 若 EfficientDet 對桌球拍完全沒有任何 bbox，仍可使用「手動框選持物」。
 手動框選不會直接算持物，仍需 Hand Landmarker 接觸分數通過。
+
+
+## V15：參考程式後的混合式修正
+
+本版不是再單純調 threshold，而是依照下列參考架構重新整理：
+
+- Google MediaPipe Hands：21 個手部 landmarks，適合即時瀏覽器 hand geometry。
+- Google MediaPipe Pose Landmarker：支援 segmentation masks，可直接取得人體遮罩。
+- 100 Days of Hands / hand_object_detector：重點是 hand-contact state 與 hand-object matching，而不是只看 wrist distance。
+- QPIC / HOTR：Human-Object Interaction 的核心是 human/object/interaction 關係，而不是單獨 object label。
+
+### 空間修正
+- Pose Landmarker 開啟 `outputSegmentationMasks: true`。
+- 有 segmentation 時，人體本體遮罩直接取真實人形。
+- PPS 由真實人體 mask 做形態式 dilation。
+- 遠體 = 畫面 - PPS。
+- segmentation 不可用時才 fallback 到木偶式 body reconstruction。
+
+### 持拍修正
+優先順序：
+1. Object Detector bbox + Hand Landmarker contact score。
+2. Object bbox 被誤分類也可以成為未知持物。
+3. Object Detector 完全漏框時，若使用者已明確選擇「桌球拍 / 網球拍 / 手機 / 工具」，
+   才允許使用 Hand Landmarker 的持續握持姿態作 fallback。
+4. 握持 fallback 明確標示為「握持姿態推定」，不宣稱模型真的看見了物件。
+
+### 握持姿態分數
+- 指尖相對掌心的收攏程度。
+- 拇指與食指的 opposition / pinch 程度。
+- 手掌整體 compactness。
+- 需連續 3 個偵測週期通過門檻才啟動。
+- 工具種類為「未知工具（自動安全模式）」時不啟用 grip-only fallback，
+  避免單純握拳被誤判成持拍。
+
+### 研究限制
+握持姿態 fallback 是「probable holding」，不是 object recognition。
+若需要桌球拍全自動精準 bbox / mask，仍需自訂桌球拍 detector 或
+open-vocabulary / segmentation 模型。
