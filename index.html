@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>人體姿態與空間分析</title>
-  <link rel="stylesheet" href="style.css?v=9" />
+  <link rel="stylesheet" href="style.css?v=12" />
 </head>
 <body>
   <main>
@@ -73,10 +73,12 @@
         <label class="select-row">
           <span>持物種類</span>
           <select id="toolType">
-            <option value="racket">球拍</option>
+            <option value="racket">網球拍</option>
+            <option value="paddle">桌球拍</option>
             <option value="pen">筆</option>
             <option value="phone">手機</option>
             <option value="tool">一般工具</option>
+            <option value="unknown">未知工具</option>
             <option value="custom">自訂</option>
           </select>
         </label>
@@ -84,6 +86,15 @@
         <div class="detection-row">
           <span>持物偵測</span>
           <strong id="objectDetectionStatus">尚未啟動</strong>
+        </div>
+
+        <div class="manual-box-row">
+          <span>特殊持物</span>
+          <div class="manual-box-actions">
+            <button id="manualBoxBtn" type="button">手動框選持物</button>
+            <button id="clearManualBoxBtn" type="button">清除框選</button>
+          </div>
+          <small id="manualBoxStatus">未框選</small>
         </div>
 
         <label class="select-row">
@@ -103,6 +114,7 @@
 
         <small class="extension-note">
           自動模式：連續偵測到持物且位置接近手腕才啟用展延；空手時自動關閉。
+          <br>框線：綠色＝已確認持物、黃色＝持物候選、藍色＝已偵測物件。自動模式的展延方向直接依物件框，不再依前臂方向猜測。若模型不支援桌球拍等類別，可按「手動框選持物」拖曳框出物件；只有框靠近手腕才視為持物。
         </small>
       </div>
     </section>
@@ -122,6 +134,6 @@
     </p>
   </main>
 
-  <script type="module" src="app.js?v=9"></script>
+  <script type="module" src="app.js?v=12"></script>
 </body>
 </html>

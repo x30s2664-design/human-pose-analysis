@@ -322,3 +322,44 @@ canvas {
     justify-self: start;
   }
 }
+
+
+/* V12: manual held-object ROI fallback */
+.manual-box-row {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) 1fr;
+  gap: 8px 10px;
+  align-items: center;
+  padding: 10px 0;
+}
+
+.manual-box-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.manual-box-actions button {
+  min-height: 42px;
+  padding: 8px 12px;
+}
+
+#manualBoxStatus {
+  grid-column: 2;
+  color: #aaa;
+  line-height: 1.45;
+}
+
+@media (max-width: 520px) {
+  .manual-box-row {
+    grid-template-columns: 1fr;
+  }
+
+  #manualBoxStatus {
+    grid-column: 1;
+  }
+
+  .manual-box-actions button {
+    flex: 1 1 140px;
+  }
+}

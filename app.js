@@ -43,6 +43,10 @@ const extensionScaleEl = document.getElementById("extensionScale");
 const extensionScaleValueEl = document.getElementById("extensionScaleValue");
 const extensionStatusEl = document.getElementById("extensionStatus");
 const objectDetectionStatusEl = document.getElementById("objectDetectionStatus");
+const manualBoxBtn = document.getElementById("manualBoxBtn");
+const clearManualBoxBtn = document.getElementById("clearManualBoxBtn");
+const manualBoxStatusEl = document.getElementById("manualBoxStatus");
+
 
 
 
@@ -63,9 +67,18 @@ let lastVideoTime = -1;
 let lastInferenceAt = 0;
 let animationId = null;
 
+// V12 manual held-object fallback for classes not present in COCO
+// (e.g. table-tennis paddle / ping-pong paddle).
+let manualObjectBox = null;
+let manualBoxDrawing = false;
+let manualBoxStart = null;
+let manualBoxCurrent = null;
+let latestPoseLandmarks = null;
+
+
 // Mobile/tablet: limiting inference rate reduces heat and browser stalls.
 const MIN_INFERENCE_INTERVAL_MS = 85;
-const OBJECT_INFERENCE_INTERVAL_MS = 450;
+const OBJECT_INFERENCE_INTERVAL_MS = 250;
 
 // Hysteresis: avoid extension flicker.
 // Detection must be confirmed across multiple object-detection cycles.
@@ -215,10 +228,12 @@ function bodyBounds(lm) {
 
 
 const TOOL_PRESETS = {
-  racket: { scale: 0.42, width: 0.11, label: "球拍" },
+  racket: { scale: 0.42, width: 0.11, label: "網球拍" },
+  paddle: { scale: 0.24, width: 0.12, label: "桌球拍" },
   pen:    { scale: 0.12, width: 0.025, label: "筆" },
   phone:  { scale: 0.16, width: 0.055, label: "手機" },
   tool:   { scale: 0.28, width: 0.055, label: "工具" },
+  unknown:{ scale: 0.26, width: 0.08, label: "未知持物" },
   custom: { scale: 0.30, width: 0.055, label: "自訂" }
 };
 
@@ -298,6 +313,58 @@ function drawRoundedCapsule(start, end, radius) {
   ctx.closePath();
 }
 
+
+function extensionGeometryFromDetectedObject(lm, hand, held) {
+  const box = held?.detection?.boundingBox;
+  const wrist = wristPixels(lm, hand);
+  if (!box || !wrist) return null;
+
+  const left = box.originX;
+  const top = box.originY;
+  const right = box.originX + box.width;
+  const bottom = box.originY + box.height;
+
+  // Start from the hand/object contact point.
+  const contact = closestPointOnBox(wrist, box);
+
+  // Use the bbox corner farthest from the wrist as the distal object endpoint.
+  // This is substantially better for rackets than extending the forearm vector.
+  const corners = [
+    { x: left, y: top },
+    { x: right, y: top },
+    { x: right, y: bottom },
+    { x: left, y: bottom }
+  ];
+
+  let far = corners[0];
+  let farD = -1;
+  for (const p of corners) {
+    const d = Math.hypot(p.x - wrist.x, p.y - wrist.y);
+    if (d > farD) {
+      farD = d;
+      far = p;
+    }
+  }
+
+  const cx = left + box.width / 2;
+  const cy = top + box.height / 2;
+
+  // Blend the far corner with bbox center to avoid a diagonal pointing to
+  // an irrelevant extreme corner on large boxes.
+  const distal = {
+    x: far.x * 0.72 + cx * 0.28,
+    y: far.y * 0.72 + cy * 0.28
+  };
+
+  return {
+    wrist,
+    contact,
+    distal,
+    box,
+    center: { x: cx, y: cy }
+  };
+}
+
 function drawExtensionZone(lm, b) {
   if (!extensionShouldBeActive()) {
     if (extensionStatusEl) {
@@ -307,24 +374,99 @@ function drawExtensionZone(lm, b) {
     return;
   }
 
+  const mode = extensionModeEl?.value || "auto";
   const hand = resolvedExtensionHand(lm, b);
   if (!hand) {
     if (extensionStatusEl) extensionStatusEl.textContent = "手部未偵測";
     return;
   }
 
+  const toolType = resolvedToolType();
+  const preset = TOOL_PRESETS[toolType] || TOOL_PRESETS.custom;
+
+  // AUTO MODE: use actual object geometry.
+  // Priority: confirmed detector result -> manual ROI fallback.
+  let autoHeld = null;
+
+  if (mode === "auto" && confirmedHeldObject?.detection) {
+    autoHeld = confirmedHeldObject;
+  } else if (mode === "auto" && manualObjectBox) {
+    const manualHeld = manualHeldObject(lm, b);
+    if (manualHeld?.validGrip) autoHeld = manualHeld;
+  }
+
+  if (mode === "auto" && autoHeld?.detection) {
+    const g = extensionGeometryFromDetectedObject(lm, hand, autoHeld);
+
+    if (g) {
+      const { wrist, contact, distal, box } = g;
+      const objectThickness = Math.max(12, Math.min(box.width, box.height) * 0.22);
+      const margin = Math.max(10, objectThickness * 0.55);
+
+      ctx.save();
+
+      // Functional extension follows the detected object itself.
+      drawRoundedCapsule(contact, distal, objectThickness + margin);
+      ctx.fillStyle = "rgba(65, 235, 145, 0.10)";
+      ctx.fill();
+      ctx.lineWidth = Math.max(2, canvas.width / 480);
+      ctx.strokeStyle = "rgba(75, 240, 150, 0.98)";
+      ctx.setLineDash([11, 8]);
+      ctx.stroke();
+
+      // Hand → object contact.
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(wrist.x, wrist.y);
+      ctx.lineTo(contact.x, contact.y);
+      ctx.strokeStyle = "rgba(120, 255, 180, 0.95)";
+      ctx.lineWidth = Math.max(2, canvas.width / 650);
+      ctx.stroke();
+
+      // Object functional axis.
+      ctx.beginPath();
+      ctx.moveTo(contact.x, contact.y);
+      ctx.lineTo(distal.x, distal.y);
+      ctx.strokeStyle = "rgba(120, 255, 180, 0.92)";
+      ctx.lineWidth = Math.max(2, canvas.width / 650);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(distal.x, distal.y, Math.max(5, objectThickness * 0.20), 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(120, 255, 180, 1)";
+      ctx.fill();
+
+      const fontSize = Math.max(15, Math.round(canvas.width / 58));
+      ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+      ctx.textBaseline = "bottom";
+      ctx.fillStyle = "rgba(120, 255, 180, 0.98)";
+      ctx.fillText(
+        `持物展延 ${preset.label}`,
+        clamp(distal.x + 10, 8, canvas.width - fontSize * 8),
+        clamp(distal.y - 8, fontSize + 8, canvas.height - 8)
+      );
+
+      ctx.restore();
+
+      if (extensionStatusEl) {
+        const pct = Math.round((autoHeld.confidence || 0) * 100);
+        extensionStatusEl.textContent =
+          autoHeld.manual
+            ? `${hand === "left" ? "左手" : "右手"}・${preset.label}・手動框選`
+            : `${hand === "left" ? "左手" : "右手"}・${preset.label}・物件框 ${pct}%`;
+      }
+      return;
+    }
+  }
+
+  // MANUAL MODE ONLY: pose-guided estimate.
   const vector = toolVectorFromPose(lm, hand);
   if (!vector) {
     if (extensionStatusEl) extensionStatusEl.textContent = "等待手臂";
     return;
   }
 
-  const toolType = resolvedToolType();
-  const preset = TOOL_PRESETS[toolType] || TOOL_PRESETS.custom;
   const scale = parseFloat(extensionScaleEl?.value || String(preset.scale));
-
-  // Tool-use extension is estimated from body height so it remains responsive
-  // on phone/tablet cameras without requiring metric calibration.
   const toolLengthPx = Math.max(20, b.h * scale);
   const radius = Math.max(8, b.h * preset.width);
 
@@ -332,54 +474,36 @@ function drawExtensionZone(lm, b) {
     x: vector.wrist.x - vector.dx * radius * 0.25,
     y: vector.wrist.y - vector.dy * radius * 0.25
   };
-
   const end = {
     x: vector.wrist.x + vector.dx * toolLengthPx,
     y: vector.wrist.y + vector.dy * toolLengthPx
   };
 
   ctx.save();
-
   drawRoundedCapsule(start, end, radius);
-  ctx.fillStyle = "rgba(65, 235, 145, 0.13)";
+  ctx.fillStyle = "rgba(65, 235, 145, 0.10)";
   ctx.fill();
-
   ctx.lineWidth = Math.max(2, canvas.width / 480);
-  ctx.strokeStyle = "rgba(75, 240, 150, 0.98)";
+  ctx.strokeStyle = "rgba(75, 240, 150, 0.90)";
   ctx.setLineDash([11, 8]);
   ctx.stroke();
-
-  // Tool axis and endpoint
-  ctx.setLineDash([]);
-  ctx.beginPath();
-  ctx.moveTo(vector.wrist.x, vector.wrist.y);
-  ctx.lineTo(end.x, end.y);
-  ctx.strokeStyle = "rgba(120, 255, 180, 0.92)";
-  ctx.lineWidth = Math.max(2, canvas.width / 650);
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.arc(end.x, end.y, Math.max(5, radius * 0.18), 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(120, 255, 180, 1)";
-  ctx.fill();
 
   const fontSize = Math.max(15, Math.round(canvas.width / 58));
   ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
   ctx.textBaseline = "bottom";
-  ctx.fillStyle = "rgba(120, 255, 180, 0.98)";
-
-  const labelX = clamp(end.x + 10, 8, canvas.width - fontSize * 6);
-  const labelY = clamp(end.y - 8, fontSize + 8, canvas.height - 8);
-  ctx.fillText(`展延 ${preset.label}`, labelX, labelY);
-
+  ctx.fillStyle = "rgba(120, 255, 180, 0.95)";
+  ctx.fillText(
+    `手動推估 ${preset.label}`,
+    clamp(end.x + 10, 8, canvas.width - fontSize * 8),
+    clamp(end.y - 8, fontSize + 8, canvas.height - 8)
+  );
   ctx.restore();
 
   if (extensionStatusEl) {
     extensionStatusEl.textContent =
-      `${hand === "left" ? "左手" : "右手"}・${preset.label}`;
+      `${hand === "left" ? "左手" : "右手"}・${preset.label}・手動推估`;
   }
 }
-
 function skeletonSegments(lm) {
   const segments = [];
   for (const connection of PoseLandmarker.POSE_CONNECTIONS) {
@@ -863,6 +987,10 @@ function wristPixels(lm, hand) {
 }
 
 function categoryOfDetection(det) {
+  if (det?.__manual) {
+    return { name: "manual object", score: 1 };
+  }
+
   const cat = det?.categories?.[0];
   if (!cat) return null;
   return {
@@ -959,7 +1087,7 @@ function updateHoldState(candidate) {
       objectDetectionStatusEl.textContent =
         `確認中：${candidate.label}`;
     } else {
-      objectDetectionStatusEl.textContent = "未偵測持物";
+      objectDetectionStatusEl.textContent = latestObjects?.length ? "已偵測物件，等待手腕關聯" : "未偵測持物";
     }
   }
 }
@@ -985,7 +1113,16 @@ function extensionShouldBeActive() {
   const mode = extensionModeEl?.value || "auto";
   if (mode === "off") return false;
   if (mode === "manual") return true;
-  return !!confirmedHeldObject;
+
+  if (confirmedHeldObject) return true;
+
+  if (manualObjectBox && latestPoseLandmarks) {
+    const b = bodyBounds(latestPoseLandmarks);
+    const held = b ? manualHeldObject(latestPoseLandmarks, b) : null;
+    return !!held?.validGrip;
+  }
+
+  return false;
 }
 
 function resolvedExtensionHand(lm, b) {
@@ -993,6 +1130,11 @@ function resolvedExtensionHand(lm, b) {
 
   if (mode === "auto" && confirmedHeldObject?.hand) {
     return confirmedHeldObject.hand;
+  }
+
+  if (mode === "auto" && manualObjectBox) {
+    const held = manualHeldObject(lm, b);
+    if (held?.validGrip) return held.hand;
   }
 
   return chooseToolHand(lm, b);
@@ -1006,6 +1148,10 @@ function resolvedToolType() {
     if (confirmedHeldObject.label === "cell phone") return "phone";
     if (confirmedHeldObject.label === "baseball bat") return "tool";
     return "tool";
+  }
+
+  if (mode === "auto" && manualObjectBox) {
+    return toolTypeEl?.value || "unknown";
   }
 
   return toolTypeEl?.value || "racket";
@@ -1184,6 +1330,9 @@ function stopAnalysis() {
   confirmedHeldObject = null;
   holdConfirmFrames = 0;
   holdMissFrames = 0;
+  latestPoseLandmarks = null;
+  manualObjectBox = null;
+  endManualBoxMode();
   if (objectDetectionStatusEl) {
     objectDetectionStatusEl.textContent =
       extensionModeEl?.value === "auto" ? "未偵測持物" :
@@ -1240,8 +1389,308 @@ async function switchCameraByDevice() {
   }
 }
 
+
+
+function canvasPointFromPointer(event) {
+  const rect = canvas.getBoundingClientRect();
+  let x = (event.clientX - rect.left) * (canvas.width / rect.width);
+  const y = (event.clientY - rect.top) * (canvas.height / rect.height);
+
+  // Canvas is visually mirrored for front camera, so invert pointer X back
+  // into the intrinsic canvas coordinate system.
+  if ((canvas.style.transform || "").includes("scaleX(-1)")) {
+    x = canvas.width - x;
+  }
+
+  return {
+    x: clamp(x, 0, canvas.width),
+    y: clamp(y, 0, canvas.height)
+  };
+}
+
+function normalizedManualBox(a, b) {
+  if (!a || !b) return null;
+  const x1 = Math.min(a.x, b.x);
+  const y1 = Math.min(a.y, b.y);
+  const x2 = Math.max(a.x, b.x);
+  const y2 = Math.max(a.y, b.y);
+
+  if (x2 - x1 < 16 || y2 - y1 < 16) return null;
+
+  return {
+    originX: x1,
+    originY: y1,
+    width: x2 - x1,
+    height: y2 - y1
+  };
+}
+
+function manualDetectionFromBox() {
+  if (!manualObjectBox) return null;
+  return {
+    boundingBox: { ...manualObjectBox },
+    categories: [{
+      categoryName: "manual object",
+      displayName: "manual object",
+      score: 1
+    }],
+    __manual: true
+  };
+}
+
+function nearestHandToBox(lm, box) {
+  if (!lm || !box) return null;
+
+  const candidates = [];
+  const lw = wristPixels(lm, "left");
+  const rw = wristPixels(lm, "right");
+
+  for (const item of [
+    { hand: "left", wrist: lw },
+    { hand: "right", wrist: rw }
+  ]) {
+    if (!item.wrist) continue;
+    const d = pointToBoxDistance(item.wrist, box, 0);
+    candidates.push({ ...item, distance: d });
+  }
+
+  candidates.sort((a, b) => a.distance - b.distance);
+  return candidates[0] || null;
+}
+
+function manualHeldObject(lm, b) {
+  if (!manualObjectBox || !lm || !b) return null;
+
+  const nearest = nearestHandToBox(lm, manualObjectBox);
+  if (!nearest) return null;
+
+  const bodyWidth =
+    visible(lm, 11) && visible(lm, 12)
+      ? Math.hypot(
+          (lm[11].x - lm[12].x) * canvas.width,
+          (lm[11].y - lm[12].y) * canvas.height
+        )
+      : Math.max(60, b.w * 0.4);
+
+  const allowed = Math.max(35, bodyWidth * 0.22);
+
+  return {
+    label: "manual object",
+    confidence: 1,
+    hand: nearest.hand,
+    distance: nearest.distance,
+    detection: manualDetectionFromBox(),
+    rank: 999,
+    validGrip: nearest.distance <= allowed,
+    manual: true
+  };
+}
+
+function updateManualBoxStatus() {
+  if (!manualBoxStatusEl) return;
+
+  if (manualBoxDrawing) {
+    manualBoxStatusEl.textContent = "拖曳框選中…";
+  } else if (manualObjectBox) {
+    manualBoxStatusEl.textContent = "已框選；靠近手腕時視為持物";
+  } else {
+    manualBoxStatusEl.textContent = "未框選";
+  }
+}
+
+function beginManualBoxMode() {
+  manualBoxDrawing = true;
+  manualBoxStart = null;
+  manualBoxCurrent = null;
+  canvas.style.pointerEvents = "auto";
+  canvas.style.cursor = "crosshair";
+  if (manualBoxBtn) manualBoxBtn.textContent = "請在畫面拖曳框選";
+  updateManualBoxStatus();
+}
+
+function endManualBoxMode() {
+  manualBoxDrawing = false;
+  manualBoxStart = null;
+  manualBoxCurrent = null;
+  canvas.style.pointerEvents = "none";
+  canvas.style.cursor = "";
+  if (manualBoxBtn) manualBoxBtn.textContent = "手動框選持物";
+  updateManualBoxStatus();
+}
+
+function clearManualObjectBox() {
+  manualObjectBox = null;
+  endManualBoxMode();
+  if (manualBoxStatusEl) manualBoxStatusEl.textContent = "未框選";
+}
+
+function sameDetection(a, b) {
+  if (!a || !b) return false;
+  const ab = a.boundingBox;
+  const bb = b.boundingBox;
+  if (!ab || !bb) return false;
+
+  const acx = ab.originX + ab.width / 2;
+  const acy = ab.originY + ab.height / 2;
+  const bcx = bb.originX + bb.width / 2;
+  const bcy = bb.originY + bb.height / 2;
+
+  const centerDistance = Math.hypot(acx - bcx, acy - bcy);
+  const sizeRef = Math.max(20, Math.min(ab.width + ab.height, bb.width + bb.height) / 2);
+
+  return centerDistance < sizeRef * 0.18;
+}
+
+function closestPointOnBox(p, box) {
+  if (!p || !box) return null;
+
+  return {
+    x: clamp(p.x, box.originX, box.originX + box.width),
+    y: clamp(p.y, box.originY, box.originY + box.height)
+  };
+}
+
+function drawHeldObjectBoxes(lm) {
+  const detectionsToDraw = [...(latestObjects || [])];
+
+  const manualDet = manualDetectionFromBox();
+  if (manualDet) detectionsToDraw.push(manualDet);
+
+  // Hysteresis can keep a held object confirmed for several missed detector
+  // cycles. Keep drawing its last known box so the UI never says "held"
+  // without showing where the detected object was.
+  if (
+    confirmedHeldObject?.detection &&
+    !detectionsToDraw.some(d => sameDetection(d, confirmedHeldObject.detection))
+  ) {
+    detectionsToDraw.push(confirmedHeldObject.detection);
+  }
+
+  if (!detectionsToDraw.length) return;
+
+  const leftWrist = lm ? wristPixels(lm, "left") : null;
+  const rightWrist = lm ? wristPixels(lm, "right") : null;
+
+  ctx.save();
+  ctx.textBaseline = "bottom";
+  ctx.font = `700 ${Math.max(14, Math.round(canvas.width / 65))}px system-ui, sans-serif`;
+
+  for (const det of detectionsToDraw) {
+    const cat = categoryOfDetection(det);
+    const box = det?.boundingBox;
+
+    if (!cat || !box) continue;
+    const isManual = !!det.__manual;
+    if (!isManual && !EXTENDABLE_OBJECT_LABELS.has(cat.name)) continue;
+
+    const isConfirmed =
+      confirmedHeldObject?.detection &&
+      sameDetection(det, confirmedHeldObject.detection);
+
+    const isCandidate =
+      !isConfirmed &&
+      currentHoldCandidate?.detection &&
+      sameDetection(det, currentHoldCandidate.detection);
+
+    let stroke = "rgba(80, 205, 255, 0.95)";
+    let fill = "rgba(80, 205, 255, 0.10)";
+    let prefix = "物件";
+
+    if (isManual) {
+      const b = bodyBounds(lm);
+      const held = b ? manualHeldObject(lm, b) : null;
+      stroke = held?.validGrip
+        ? "rgba(70, 245, 145, 1)"
+        : "rgba(255, 170, 70, 1)";
+      fill = held?.validGrip
+        ? "rgba(70, 245, 145, 0.12)"
+        : "rgba(255, 170, 70, 0.10)";
+      prefix = held?.validGrip ? "手動持物" : "手動框選";
+    }
+
+    if (isCandidate) {
+      stroke = "rgba(255, 205, 65, 0.98)";
+      fill = "rgba(255, 205, 65, 0.12)";
+      prefix = "持物候選";
+    }
+
+    if (isConfirmed) {
+      stroke = "rgba(70, 245, 145, 1)";
+      fill = "rgba(70, 245, 145, 0.14)";
+      prefix = "已持物";
+    }
+
+    const x = clamp(box.originX, 0, canvas.width);
+    const y = clamp(box.originY, 0, canvas.height);
+    const w = clamp(box.width, 0, canvas.width - x);
+    const h = clamp(box.height, 0, canvas.height - y);
+
+    ctx.fillStyle = fill;
+    ctx.fillRect(x, y, w, h);
+
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = Math.max(3, canvas.width / 320);
+    ctx.setLineDash(isCandidate ? [10, 7] : []);
+    ctx.strokeRect(x, y, w, h);
+
+    const pct = Math.round(cat.score * 100);
+    const label = isManual
+      ? `${prefix}：${toolTypeEl?.selectedOptions?.[0]?.textContent || "未知工具"}`
+      : `${prefix}：${cat.name} ${pct}%`;
+
+    const metrics = ctx.measureText(label);
+    const padX = 7;
+    const padY = 5;
+    const labelH = Math.max(24, Math.round(canvas.width / 42));
+    const labelW = metrics.width + padX * 2;
+    const labelX = clamp(x, 2, canvas.width - labelW - 2);
+    const labelY = clamp(y - labelH, 2, canvas.height - labelH - 2);
+
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(10, 10, 10, 0.78)";
+    ctx.fillRect(labelX, labelY, labelW, labelH);
+
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(labelX, labelY, labelW, labelH);
+
+    ctx.fillStyle = stroke;
+    ctx.fillText(label, labelX + padX, labelY + labelH - padY);
+
+    // For candidate/confirmed holding, draw association from wrist to object.
+    if (isConfirmed || isCandidate) {
+      const hand = isConfirmed
+        ? confirmedHeldObject.hand
+        : currentHoldCandidate?.hand;
+
+      const wrist = hand === "left" ? leftWrist : rightWrist;
+      const target = closestPointOnBox(wrist, box);
+
+      if (wrist && target) {
+        ctx.beginPath();
+        ctx.moveTo(wrist.x, wrist.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = Math.max(2, canvas.width / 500);
+        ctx.setLineDash([7, 5]);
+        ctx.stroke();
+
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(target.x, target.y, Math.max(4, canvas.width / 180), 0, Math.PI * 2);
+        ctx.fillStyle = stroke;
+        ctx.fill();
+      }
+    }
+  }
+
+  ctx.restore();
+}
+
 function drawResults(result) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  latestPoseLandmarks = result?.landmarks?.[0] || null;
 
   if (!result?.landmarks?.length) {
     resetMetrics();
@@ -1255,6 +1704,9 @@ function drawResults(result) {
     drawSpaceZones(result.landmarks[0]);
   }
 
+  // V10: show detected held-object bounding boxes on top of the video.
+  drawHeldObjectBoxes(result.landmarks[0]);
+
   for (const lm of result.landmarks) {
     drawingUtils.drawConnectors(
       lm,
@@ -1265,6 +1717,20 @@ function drawResults(result) {
       lm,
       { color: "#ffffff", fillColor: "#111111", radius: 4, lineWidth: 2 }
     );
+  }
+
+  if (manualBoxDrawing && manualBoxStart && manualBoxCurrent) {
+    const preview = normalizedManualBox(manualBoxStart, manualBoxCurrent);
+    if (preview) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(255, 170, 70, 1)";
+      ctx.fillStyle = "rgba(255, 170, 70, 0.08)";
+      ctx.lineWidth = Math.max(2, canvas.width / 400);
+      ctx.setLineDash([10, 7]);
+      ctx.fillRect(preview.originX, preview.originY, preview.width, preview.height);
+      ctx.strokeRect(preview.originX, preview.originY, preview.width, preview.height);
+      ctx.restore();
+    }
   }
 
   showAnalysis(result.landmarks[0]);
@@ -1366,6 +1832,45 @@ extensionScaleEl?.addEventListener("input", updateExtensionScaleLabel);
 updateExtensionMode();
 applyToolPreset();
 
+
+manualBoxBtn?.addEventListener("click", beginManualBoxMode);
+clearManualBoxBtn?.addEventListener("click", clearManualObjectBox);
+
+canvas.addEventListener("pointerdown", (event) => {
+  if (!manualBoxDrawing) return;
+  event.preventDefault();
+  canvas.setPointerCapture?.(event.pointerId);
+  manualBoxStart = canvasPointFromPointer(event);
+  manualBoxCurrent = manualBoxStart;
+});
+
+canvas.addEventListener("pointermove", (event) => {
+  if (!manualBoxDrawing || !manualBoxStart) return;
+  event.preventDefault();
+  manualBoxCurrent = canvasPointFromPointer(event);
+});
+
+canvas.addEventListener("pointerup", (event) => {
+  if (!manualBoxDrawing || !manualBoxStart) return;
+  event.preventDefault();
+
+  const end = canvasPointFromPointer(event);
+  const box = normalizedManualBox(manualBoxStart, end);
+
+  if (box) {
+    manualObjectBox = box;
+    if (manualBoxStatusEl) {
+      manualBoxStatusEl.textContent = "已框選；等待手腕靠近物件";
+    }
+  }
+
+  endManualBoxMode();
+});
+
+canvas.addEventListener("pointercancel", () => {
+  if (manualBoxDrawing) endManualBoxMode();
+});
+
 startBtn.addEventListener("click", startAnalysis);
 stopBtn.addEventListener("click", stopAnalysis);
 flipBtn.addEventListener("click", switchCameraByFacing);
@@ -1383,4 +1888,4 @@ window.addEventListener("pagehide", () => {
   if (running || stream) stopTracks();
 });
 
-setStatus("等待啟動", "V8：本體輪廓展延；自動判斷手機／球拍等持物。");
+setStatus("等待啟動", "V12：自動偵測 + 手動框選 fallback；支援未收錄於 COCO 的桌球拍等工具。");
