@@ -70,13 +70,17 @@ const OBJECT_INFERENCE_INTERVAL_MS = 450;
 // Hysteresis: avoid extension flicker.
 // Detection must be confirmed across multiple object-detection cycles.
 const HOLD_CONFIRM_CYCLES = 2;
-const HOLD_RELEASE_CYCLES = 3;
+const HOLD_RELEASE_CYCLES = 4;
 
 // COCO / EfficientDet Lite0 supported categories that can plausibly extend action space.
 // Tennis racket is the primary target. Pen is not a COCO class, so pen remains manual/custom.
 const EXTENDABLE_OBJECT_LABELS = new Set([
   "tennis racket",
   "baseball bat",
+  "cell phone",
+  "book",
+  "bottle",
+  "cup",
   "scissors",
   "knife",
   "fork",
@@ -213,6 +217,7 @@ function bodyBounds(lm) {
 const TOOL_PRESETS = {
   racket: { scale: 0.42, width: 0.11, label: "球拍" },
   pen:    { scale: 0.12, width: 0.025, label: "筆" },
+  phone:  { scale: 0.16, width: 0.055, label: "手機" },
   tool:   { scale: 0.28, width: 0.055, label: "工具" },
   custom: { scale: 0.30, width: 0.055, label: "自訂" }
 };
@@ -377,26 +382,160 @@ function drawExtensionZone(lm, b) {
 
 function skeletonSegments(lm) {
   const segments = [];
-
   for (const connection of PoseLandmarker.POSE_CONNECTIONS) {
     const aIndex = connection.start;
     const bIndex = connection.end;
-
+    if (aIndex <= 10 && bIndex <= 10) continue;
     if (!visible(lm, aIndex) || !visible(lm, bIndex)) continue;
 
     segments.push({
+      aIndex, bIndex,
       ax: lm[aIndex].x * canvas.width,
       ay: lm[aIndex].y * canvas.height,
       bx: lm[bIndex].x * canvas.width,
       by: lm[bIndex].y * canvas.height
     });
   }
-
   return segments;
 }
 
-function drawSkeletonField(segments, width, fillStyle) {
-  if (!segments.length) return;
+function pxPoint(lm, i) {
+  if (!visible(lm, i)) return null;
+  return { x: lm[i].x * canvas.width, y: lm[i].y * canvas.height };
+}
+
+function bodyReferenceWidth(lm, b) {
+  if (visible(lm, 11) && visible(lm, 12)) {
+    const s = Math.hypot(
+      (lm[11].x - lm[12].x) * canvas.width,
+      (lm[11].y - lm[12].y) * canvas.height
+    );
+    if (s > 20) return s;
+  }
+
+  if (visible(lm, 23) && visible(lm, 24)) {
+    const h = Math.hypot(
+      (lm[23].x - lm[24].x) * canvas.width,
+      (lm[23].y - lm[24].y) * canvas.height
+    );
+    if (h > 20) return h * 1.15;
+  }
+
+  return Math.max(60, b.w * 0.42);
+}
+
+function newMaskCanvas() {
+  const c = document.createElement("canvas");
+  c.width = canvas.width;
+  c.height = canvas.height;
+  return c;
+}
+
+function maskCapsule(mctx, a, b, width) {
+  if (!a || !b) return;
+  mctx.save();
+  mctx.strokeStyle = "#fff";
+  mctx.lineCap = "round";
+  mctx.lineJoin = "round";
+  mctx.lineWidth = width;
+  mctx.beginPath();
+  mctx.moveTo(a.x, a.y);
+  mctx.lineTo(b.x, b.y);
+  mctx.stroke();
+  mctx.restore();
+}
+
+function maskPolygon(mctx, pts) {
+  const p = pts.filter(Boolean);
+  if (p.length < 3) return;
+  mctx.save();
+  mctx.fillStyle = "#fff";
+  mctx.beginPath();
+  mctx.moveTo(p[0].x, p[0].y);
+  for (let i = 1; i < p.length; i++) mctx.lineTo(p[i].x, p[i].y);
+  mctx.closePath();
+  mctx.fill();
+  mctx.restore();
+}
+
+function buildBodyMask(lm, b, margin = 0) {
+  const mask = newMaskCanvas();
+  const mctx = mask.getContext("2d");
+  const refW = bodyReferenceWidth(lm, b);
+
+  const p11 = pxPoint(lm, 11), p12 = pxPoint(lm, 12);
+  const p13 = pxPoint(lm, 13), p14 = pxPoint(lm, 14);
+  const p15 = pxPoint(lm, 15), p16 = pxPoint(lm, 16);
+  const p23 = pxPoint(lm, 23), p24 = pxPoint(lm, 24);
+  const p25 = pxPoint(lm, 25), p26 = pxPoint(lm, 26);
+  const p27 = pxPoint(lm, 27), p28 = pxPoint(lm, 28);
+
+  // Keep the reconstructed body visually close to actual anatomy.
+  const torsoEdge = refW * 0.07 + margin * 2;
+  const upperArmW = refW * 0.18 + margin * 2;
+  const forearmW  = refW * 0.15 + margin * 2;
+  const thighW    = refW * 0.22 + margin * 2;
+  const shinW     = refW * 0.16 + margin * 2;
+
+  if (p11 && p12 && p23 && p24) {
+    maskPolygon(mctx, [p11, p12, p24, p23]);
+    maskCapsule(mctx, p11, p12, torsoEdge);
+    maskCapsule(mctx, p12, p24, torsoEdge);
+    maskCapsule(mctx, p24, p23, torsoEdge);
+    maskCapsule(mctx, p23, p11, torsoEdge);
+  }
+
+  maskCapsule(mctx, p11, p13, upperArmW);
+  maskCapsule(mctx, p13, p15, forearmW);
+  maskCapsule(mctx, p12, p14, upperArmW);
+  maskCapsule(mctx, p14, p16, forearmW);
+
+  maskCapsule(mctx, p23, p25, thighW);
+  maskCapsule(mctx, p25, p27, shinW);
+  maskCapsule(mctx, p24, p26, thighW);
+  maskCapsule(mctx, p26, p28, shinW);
+
+  // Hands
+  mctx.fillStyle = "#fff";
+  for (const p of [p15, p16]) {
+    if (!p) continue;
+    mctx.beginPath();
+    mctx.arc(p.x, p.y, refW * 0.07 + margin, 0, Math.PI * 2);
+    mctx.fill();
+  }
+
+  // Head - compact oval, no giant circular PPS bubble.
+  if (visible(lm, 0)) {
+    const nose = pxPoint(lm, 0);
+    if (nose) {
+      mctx.beginPath();
+      mctx.ellipse(
+        nose.x,
+        nose.y,
+        refW * 0.19 + margin,
+        refW * 0.24 + margin,
+        0, 0, Math.PI * 2
+      );
+      mctx.fill();
+    }
+  }
+
+  return mask;
+}
+
+function paintMaskColor(mask, color) {
+  const tmp = newMaskCanvas();
+  const tctx = tmp.getContext("2d");
+  tctx.drawImage(mask, 0, 0);
+  tctx.globalCompositeOperation = "source-in";
+  tctx.fillStyle = color;
+  tctx.fillRect(0, 0, tmp.width, tmp.height);
+  ctx.drawImage(tmp, 0, 0);
+}
+
+
+function drawRotatedCapsule(a, b, width, fillStyle, strokeStyle = null) {
+  if (!a || !b) return;
 
   ctx.save();
   ctx.lineCap = "round";
@@ -405,140 +544,208 @@ function drawSkeletonField(segments, width, fillStyle) {
   ctx.strokeStyle = fillStyle;
 
   ctx.beginPath();
-  for (const s of segments) {
-    ctx.moveTo(s.ax, s.ay);
-    ctx.lineTo(s.bx, s.by);
-  }
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
   ctx.stroke();
+
+  if (strokeStyle) {
+    ctx.lineWidth = Math.max(1.5, width * 0.06);
+    ctx.strokeStyle = strokeStyle;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+
   ctx.restore();
 }
 
-function drawSkeletonBoundary(segments, width, strokeStyle, dash = []) {
-  if (!segments.length) return;
+function drawJointDisc(p, radius, fillStyle, strokeStyle = null) {
+  if (!p) return;
 
   ctx.save();
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.lineWidth = width;
-  ctx.strokeStyle = strokeStyle;
-  ctx.setLineDash(dash);
-
   ctx.beginPath();
-  for (const s of segments) {
-    ctx.moveTo(s.ax, s.ay);
-    ctx.lineTo(s.bx, s.by);
+  ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = fillStyle;
+  ctx.fill();
+
+  if (strokeStyle) {
+    ctx.lineWidth = Math.max(1.5, radius * 0.14);
+    ctx.strokeStyle = strokeStyle;
+    ctx.stroke();
   }
-  ctx.stroke();
   ctx.restore();
+}
+
+function drawMannequinBody(lm, b) {
+  const refW = bodyReferenceWidth(lm, b);
+
+  const p0  = pxPoint(lm, 0);
+  const p11 = pxPoint(lm, 11), p12 = pxPoint(lm, 12);
+  const p13 = pxPoint(lm, 13), p14 = pxPoint(lm, 14);
+  const p15 = pxPoint(lm, 15), p16 = pxPoint(lm, 16);
+  const p23 = pxPoint(lm, 23), p24 = pxPoint(lm, 24);
+  const p25 = pxPoint(lm, 25), p26 = pxPoint(lm, 26);
+  const p27 = pxPoint(lm, 27), p28 = pxPoint(lm, 28);
+
+  const red = "rgba(238, 92, 74, 0.42)";
+  const redEdge = "rgba(255, 126, 108, 0.78)";
+  const joint = "rgba(232, 82, 66, 0.58)";
+
+  // Head block
+  if (p0) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(
+      p0.x, p0.y,
+      Math.max(16, refW * 0.18),
+      Math.max(20, refW * 0.23),
+      0, 0, Math.PI * 2
+    );
+    ctx.fillStyle = red;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1.5, refW * 0.015);
+    ctx.strokeStyle = redEdge;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Torso block = shoulder trapezoid to hips
+  if (p11 && p12 && p23 && p24) {
+    const shoulderMid = { x: (p11.x + p12.x)/2, y: (p11.y + p12.y)/2 };
+    const hipMid = { x: (p23.x + p24.x)/2, y: (p23.y + p24.y)/2 };
+
+    const insetShoulder = 0.05;
+    const insetHip = 0.02;
+
+    const t11 = {
+      x: p11.x + (shoulderMid.x - p11.x) * insetShoulder,
+      y: p11.y + (shoulderMid.y - p11.y) * insetShoulder
+    };
+    const t12 = {
+      x: p12.x + (shoulderMid.x - p12.x) * insetShoulder,
+      y: p12.y + (shoulderMid.y - p12.y) * insetShoulder
+    };
+    const t23 = {
+      x: p23.x + (hipMid.x - p23.x) * insetHip,
+      y: p23.y + (hipMid.y - p23.y) * insetHip
+    };
+    const t24 = {
+      x: p24.x + (hipMid.x - p24.x) * insetHip,
+      y: p24.y + (hipMid.y - p24.y) * insetHip
+    };
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(t11.x, t11.y);
+    ctx.lineTo(t12.x, t12.y);
+    ctx.lineTo(t24.x, t24.y);
+    ctx.lineTo(t23.x, t23.y);
+    ctx.closePath();
+    ctx.fillStyle = red;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1.5, refW * 0.015);
+    ctx.strokeStyle = redEdge;
+    ctx.stroke();
+    ctx.restore();
+
+    // Separate pelvis block, giving a mannequin-like two-piece torso.
+    const pelvisTopY = hipMid.y - refW * 0.05;
+    const pelvisBottomY = hipMid.y + refW * 0.13;
+    const pelvisHalfW = Math.max(refW * 0.22, Math.abs(p24.x - p23.x) * 0.55);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(
+      hipMid.x - pelvisHalfW,
+      pelvisTopY,
+      pelvisHalfW * 2,
+      Math.max(12, pelvisBottomY - pelvisTopY),
+      Math.max(6, refW * 0.06)
+    );
+    ctx.fillStyle = red;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1.5, refW * 0.015);
+    ctx.strokeStyle = redEdge;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Limb blocks
+  const upperArmW = Math.max(12, refW * 0.17);
+  const forearmW  = Math.max(10, refW * 0.14);
+  const thighW    = Math.max(14, refW * 0.21);
+  const shinW     = Math.max(11, refW * 0.15);
+
+  drawRotatedCapsule(p11, p13, upperArmW, red, redEdge);
+  drawRotatedCapsule(p13, p15, forearmW,  red, redEdge);
+  drawRotatedCapsule(p12, p14, upperArmW, red, redEdge);
+  drawRotatedCapsule(p14, p16, forearmW,  red, redEdge);
+
+  drawRotatedCapsule(p23, p25, thighW, red, redEdge);
+  drawRotatedCapsule(p25, p27, shinW,  red, redEdge);
+  drawRotatedCapsule(p24, p26, thighW, red, redEdge);
+  drawRotatedCapsule(p26, p28, shinW,  red, redEdge);
+
+  // Joint discs emphasize articulation like a wooden mannequin.
+  const shoulderR = Math.max(6, refW * 0.055);
+  const elbowR = Math.max(5, refW * 0.045);
+  const wristR = Math.max(5, refW * 0.04);
+  const hipR = Math.max(6, refW * 0.055);
+  const kneeR = Math.max(5, refW * 0.05);
+  const ankleR = Math.max(5, refW * 0.04);
+
+  for (const p of [p11, p12]) drawJointDisc(p, shoulderR, joint, redEdge);
+  for (const p of [p13, p14]) drawJointDisc(p, elbowR, joint, redEdge);
+  for (const p of [p15, p16]) drawJointDisc(p, wristR, joint, redEdge);
+  for (const p of [p23, p24]) drawJointDisc(p, hipR, joint, redEdge);
+  for (const p of [p25, p26]) drawJointDisc(p, kneeR, joint, redEdge);
+  for (const p of [p27, p28]) drawJointDisc(p, ankleR, joint, redEdge);
 }
 
 function drawSpaceZones(lm) {
   const b = bodyBounds(lm);
   if (!b) return;
 
-  const segments = skeletonSegments(lm);
-  if (!segments.length) return;
+  const refW = bodyReferenceWidth(lm, b);
+  const scale = parseFloat(ppsScaleEl?.value || "0.18");
 
-  const scale = parseFloat(ppsScaleEl?.value || "0.42");
+  // Use shoulder/body WIDTH. 0.20 gives a compact envelope around the body.
+  const ppsMargin = Math.max(10, refW * scale);
 
-  /*
-   * V6 core rule:
-   * WHITE POSE LINES are the spatial reference.
-   *
-   * 1. Body space is a narrow morphological expansion around every
-   *    detected white skeleton segment.
-   * 2. PPS is a larger expansion around those SAME skeleton segments.
-   * 3. Everything not covered by those fields is extrapersonal space.
-   *
-   * Therefore the yellow PPS follows arms/legs/posture instead of being
-   * a fixed ellipse or rectangle around the person.
-   */
-  const bodyRadius = Math.max(10, b.h * 0.035);
-  const ppsRadius = Math.max(bodyRadius + 12, b.h * scale);
-
+  // Far space is only a subtle background cue.
   ctx.save();
-
-  // FAR / extrapersonal background.
-  ctx.fillStyle = "rgba(65, 120, 255, 0.075)";
+  ctx.fillStyle = "rgba(65, 120, 255, 0.025)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
 
-  // PPS: large yellow field grown outward from the white skeleton.
-  // Stroke width is diameter, hence radius * 2.
-  drawSkeletonField(
-    segments,
-    ppsRadius * 2,
-    "rgba(255, 210, 60, 0.13)"
-  );
-  drawSkeletonBoundary(
-    segments,
-    ppsRadius * 2,
-    "rgba(255, 220, 80, 0.62)",
-    [12, 10]
-  );
+  const ppsMask = buildBodyMask(lm, b, ppsMargin);
+  const bodyMask = buildBodyMask(lm, b, 0);
 
-  // BODY: tighter red field grown from the same white skeleton.
-  drawSkeletonField(
-    segments,
-    bodyRadius * 2,
-    "rgba(255, 70, 70, 0.16)"
-  );
-  drawSkeletonBoundary(
-    segments,
-    bodyRadius * 2,
-    "rgba(255, 90, 90, 0.78)"
-  );
+  paintMaskColor(ppsMask, "rgba(255, 214, 70, 0.16)");
+  // PPS comes from the reconstructed body envelope.
+  // The visible body itself is rendered as articulated mannequin blocks.
+  drawMannequinBody(lm, b);
 
-  // Head gets a body-centered disc because facial connections alone
-  // would otherwise produce a very thin body field around the face.
-  if (visible(lm, 0)) {
-    const headX = lm[0].x * canvas.width;
-    const headY = lm[0].y * canvas.height;
-    const shoulderSpan =
-      visible(lm, 11) && visible(lm, 12)
-        ? Math.hypot(
-            (lm[11].x - lm[12].x) * canvas.width,
-            (lm[11].y - lm[12].y) * canvas.height
-          )
-        : b.w * 0.35;
-
-    const headBodyRadius = Math.max(bodyRadius * 1.7, shoulderSpan * 0.24);
-    const headPpsRadius = headBodyRadius + ppsRadius * 0.72;
-
-    ctx.beginPath();
-    ctx.arc(headX, headY, headPpsRadius, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255, 210, 60, 0.10)";
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.arc(headX, headY, headBodyRadius, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255, 70, 70, 0.13)";
-    ctx.fill();
-  }
-
-  // Compact labels placed relative to detected body.
-  const fontSize = Math.max(14, Math.round(canvas.width / 62));
+  const fontSize = Math.max(13, Math.round(canvas.width / 70));
+  ctx.save();
   ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
   ctx.textBaseline = "top";
 
-  ctx.fillStyle = "rgba(255, 105, 105, 0.98)";
-  ctx.fillText("本體（白線基準）", clamp(b.minX, 8, canvas.width - 180),
-               clamp(b.minY + b.h * 0.46, 8, canvas.height - 30));
+  ctx.fillStyle = "rgba(255, 110, 110, 0.96)";
+  ctx.fillText("本體", clamp(b.maxX - 48, 8, canvas.width - 60),
+               clamp(b.minY + b.h * 0.52, 8, canvas.height - 26));
 
-  ctx.fillStyle = "rgba(255, 225, 100, 0.98)";
-  ctx.fillText("近體 PPS（由白線展延）",
-               clamp(b.minX - ppsRadius * 0.55, 8, canvas.width - 230),
-               clamp(b.minY - ppsRadius * 0.55, 8, canvas.height - 30));
+  ctx.fillStyle = "rgba(255, 230, 110, 0.96)";
+  ctx.fillText("近體 PPS", clamp(b.maxX - 85, 8, canvas.width - 105),
+               clamp(b.minY - ppsMargin * 0.45, 8, canvas.height - 26));
 
-  ctx.fillStyle = "rgba(120, 175, 255, 0.95)";
+  ctx.fillStyle = "rgba(120, 175, 255, 0.92)";
   ctx.fillText("遠體", 12, canvas.height - fontSize - 12);
-
   ctx.restore();
 
-  // Tool-use extension remains independent and is only shown according
-  // to the selected V5 auto/manual/off policy.
   drawExtensionZone(lm, b);
 }
-
 function showAnalysis(lm) {
   headEl.textContent = headDirection(lm);
   supportEl.textContent = supportLeg(lm);
@@ -581,7 +788,7 @@ async function initObjectDetector() {
         modelAssetPath: OBJECT_MODEL_URL
       },
       runningMode: "VIDEO",
-      scoreThreshold: 0.35,
+      scoreThreshold: 0.25,
       maxResults: 8
     });
 
@@ -608,6 +815,41 @@ function detectionCenter(det) {
   return {
     x: box.originX + box.width / 2,
     y: box.originY + box.height / 2
+  };
+}
+
+function pointToBoxDistance(p, box, padding = 0) {
+  if (!p || !box) return Infinity;
+
+  const left = box.originX - padding;
+  const top = box.originY - padding;
+  const right = box.originX + box.width + padding;
+  const bottom = box.originY + box.height + padding;
+
+  const dx =
+    p.x < left ? left - p.x :
+    p.x > right ? p.x - right : 0;
+
+  const dy =
+    p.y < top ? top - p.y :
+    p.y > bottom ? p.y - bottom : 0;
+
+  return Math.hypot(dx, dy);
+}
+
+function wristTouchesObject(wrist, det, bodyWidth) {
+  const box = det?.boundingBox;
+  if (!wrist || !box) return null;
+
+  // Use a small hand-sized padding around the object bbox.
+  // This works much better for long rackets and phones than comparing
+  // wrist distance to the bounding-box CENTER.
+  const padding = Math.max(18, bodyWidth * 0.10);
+  const edgeDistance = pointToBoxDistance(wrist, box, padding);
+
+  return {
+    distance: edgeDistance,
+    touches: edgeDistance <= Math.max(22, bodyWidth * 0.12)
   };
 }
 
@@ -639,8 +881,13 @@ function findHeldObjectNearHands(lm, b, detections) {
   if (rw) wrists.push({ hand: "right", ...rw });
   if (!wrists.length) return null;
 
-  // Allow some distance because racket bounding boxes are centered away from the grip.
-  const maxDistance = Math.max(55, b.h * 0.42);
+  const bodyWidth =
+    visible(lm, 11) && visible(lm, 12)
+      ? Math.hypot(
+          (lm[11].x - lm[12].x) * canvas.width,
+          (lm[11].y - lm[12].y) * canvas.height
+        )
+      : Math.max(60, b.w * 0.4);
 
   let best = null;
 
@@ -648,31 +895,28 @@ function findHeldObjectNearHands(lm, b, detections) {
     const cat = categoryOfDetection(det);
     if (!cat || !EXTENDABLE_OBJECT_LABELS.has(cat.name)) continue;
 
-    const center = detectionCenter(det);
-    if (!center) continue;
-
     for (const wrist of wrists) {
-      const d = Math.hypot(center.x - wrist.x, center.y - wrist.y);
+      const relation = wristTouchesObject(wrist, det, bodyWidth);
+      if (!relation?.touches) continue;
 
-      if (d <= maxDistance) {
-        const score = cat.score * 2 - d / maxDistance;
-        if (!best || score > best.rank) {
-          best = {
-            label: cat.name,
-            confidence: cat.score,
-            hand: wrist.hand,
-            distance: d,
-            detection: det,
-            rank: score
-          };
-        }
+      // Prefer high confidence and closer wrist/object contact.
+      const rank = cat.score * 3 - relation.distance / Math.max(1, bodyWidth);
+
+      if (!best || rank > best.rank) {
+        best = {
+          label: cat.name,
+          confidence: cat.score,
+          hand: wrist.hand,
+          distance: relation.distance,
+          detection: det,
+          rank
+        };
       }
     }
   }
 
   return best;
 }
-
 function updateHoldState(candidate) {
   const sameAsPrevious =
     candidate &&
@@ -759,6 +1003,7 @@ function resolvedToolType() {
 
   if (mode === "auto" && confirmedHeldObject) {
     if (confirmedHeldObject.label === "tennis racket") return "racket";
+    if (confirmedHeldObject.label === "cell phone") return "phone";
     if (confirmedHeldObject.label === "baseball bat") return "tool";
     return "tool";
   }
@@ -1061,7 +1306,7 @@ function predict(now) {
 
 if (ppsScaleEl && ppsScaleValueEl) {
   const updatePpsScaleLabel = () => {
-    ppsScaleValueEl.textContent = `${Number(ppsScaleEl.value).toFixed(2)} × 身高`;
+    ppsScaleValueEl.textContent = `${Number(ppsScaleEl.value).toFixed(2)} × 身寬`;
   };
   ppsScaleEl.addEventListener("input", updatePpsScaleLabel);
   updatePpsScaleLabel();
@@ -1138,4 +1383,4 @@ window.addEventListener("pagehide", () => {
   if (running || stream) stopTracks();
 });
 
-setStatus("等待啟動", "V5：空手不展延；偵測到持物且確認後才啟用展延區。");
+setStatus("等待啟動", "V8：本體輪廓展延；自動判斷手機／球拍等持物。");
