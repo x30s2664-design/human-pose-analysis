@@ -2,19 +2,26 @@ import {
   FilesetResolver,
   PoseLandmarker,
   DrawingUtils
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/+esm";
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/+esm";
+
+const WASM_URL =
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
 
 const MODEL_URL =
-  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
+const ctx = canvas.getContext("2d", { alpha: true });
+
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
+const flipBtn = document.getElementById("flipBtn");
 const cameraSelect = document.getElementById("cameraSelect");
+const placeholder = document.getElementById("placeholder");
 
 const statusEl = document.getElementById("status");
+const detailEl = document.getElementById("detail");
 const headEl = document.getElementById("head");
 const shoulderEl = document.getElementById("shoulder");
 const hipEl = document.getElementById("hip");
@@ -25,10 +32,41 @@ const supportEl = document.getElementById("support");
 let poseLandmarker = null;
 let stream = null;
 let running = false;
+let starting = false;
+let facingMode = "user";
 let lastVideoTime = -1;
+let lastInferenceAt = 0;
+let animationId = null;
+
+// Mobile/tablet: limiting inference rate reduces heat and browser stalls.
+const MIN_INFERENCE_INTERVAL_MS = 85;
+
+function setStatus(text, detail = "") {
+  statusEl.textContent = text;
+  detailEl.textContent = detail;
+}
+
+function resetMetrics() {
+  headEl.textContent = "—";
+  shoulderEl.textContent = "—";
+  hipEl.textContent = "—";
+  leftKneeEl.textContent = "—";
+  rightKneeEl.textContent = "—";
+  supportEl.textContent = "—";
+}
+
+function friendlyError(err) {
+  const name = err?.name || "";
+  if (name === "NotAllowedError") return "相機權限被拒絕，請到瀏覽器網站權限允許 Camera。";
+  if (name === "NotFoundError") return "找不到可用相機。";
+  if (name === "NotReadableError") return "相機正被其他 App 使用，請關閉其他相機程式再試。";
+  if (name === "OverconstrainedError") return "相機不支援目前設定，請換另一支相機。";
+  if (name === "SecurityError") return "瀏覽器安全設定阻止相機，請使用 HTTPS 網址。";
+  return err?.message || String(err);
+}
 
 function deg(v) {
-  return `${v.toFixed(1)}°`;
+  return Number.isFinite(v) ? `${v.toFixed(1)}°` : "—";
 }
 
 function angleLine(a, b) {
@@ -40,12 +78,10 @@ function jointAngle(a, b, c) {
   const bay = a.y - b.y;
   const bcx = c.x - b.x;
   const bcy = c.y - b.y;
-
   const dot = bax * bcx + bay * bcy;
   const n1 = Math.hypot(bax, bay);
   const n2 = Math.hypot(bcx, bcy);
   if (n1 < 1e-6 || n2 < 1e-6) return null;
-
   const cosine = Math.max(-1, Math.min(1, dot / (n1 * n2)));
   return Math.acos(cosine) * 180 / Math.PI;
 }
@@ -56,24 +92,23 @@ function visible(lm, i, min = 0.35) {
 }
 
 function headDirection(lm) {
-  // MediaPipe Pose indices:
-  // nose 0, left eye 2, right eye 5
   if (![0, 2, 5].every(i => visible(lm, i))) return "UNKNOWN";
-  const nose = lm[0];
-  const le = lm[2];
-  const re = lm[5];
-  const midX = (le.x + re.x) / 2;
-  const span = Math.abs(le.x - re.x);
-  if (span < 0.002) return "UNKNOWN";
-  const dx = (nose.x - midX) / span;
 
+  const nose = lm[0];
+  const leftEye = lm[2];
+  const rightEye = lm[5];
+  const eyeMidX = (leftEye.x + rightEye.x) / 2;
+  const eyeSpan = Math.abs(leftEye.x - rightEye.x);
+
+  if (eyeSpan < 0.002) return "UNKNOWN";
+
+  const dx = (nose.x - eyeMidX) / eyeSpan;
   if (dx < -0.18) return "LEFT";
   if (dx > 0.18) return "RIGHT";
   return "FORWARD";
 }
 
 function supportLeg(lm) {
-  // hips 23/24, ankles 27/28
   if (![23, 24, 27, 28].every(i => visible(lm, i))) return "UNKNOWN";
 
   const hipMidX = (lm[23].x + lm[24].x) / 2;
@@ -90,171 +125,303 @@ function showAnalysis(lm) {
   headEl.textContent = headDirection(lm);
   supportEl.textContent = supportLeg(lm);
 
-  if ([11, 12].every(i => visible(lm, i))) {
-    shoulderEl.textContent = deg(angleLine(lm[11], lm[12]));
-  } else {
-    shoulderEl.textContent = "—";
-  }
+  shoulderEl.textContent =
+    [11, 12].every(i => visible(lm, i))
+      ? deg(angleLine(lm[11], lm[12]))
+      : "—";
 
-  if ([23, 24].every(i => visible(lm, i))) {
-    hipEl.textContent = deg(angleLine(lm[23], lm[24]));
-  } else {
-    hipEl.textContent = "—";
-  }
+  hipEl.textContent =
+    [23, 24].every(i => visible(lm, i))
+      ? deg(angleLine(lm[23], lm[24]))
+      : "—";
 
-  if ([23, 25, 27].every(i => visible(lm, i))) {
-    leftKneeEl.textContent = deg(jointAngle(lm[23], lm[25], lm[27]));
-  } else {
-    leftKneeEl.textContent = "—";
-  }
+  leftKneeEl.textContent =
+    [23, 25, 27].every(i => visible(lm, i))
+      ? deg(jointAngle(lm[23], lm[25], lm[27]))
+      : "—";
 
-  if ([24, 26, 28].every(i => visible(lm, i))) {
-    rightKneeEl.textContent = deg(jointAngle(lm[24], lm[26], lm[28]));
-  } else {
-    rightKneeEl.textContent = "—";
-  }
+  rightKneeEl.textContent =
+    [24, 26, 28].every(i => visible(lm, i))
+      ? deg(jointAngle(lm[24], lm[26], lm[28]))
+      : "—";
 }
 
-async function createPoseLandmarker() {
-  statusEl.textContent = "模型載入中…";
+async function initPoseModel() {
+  if (poseLandmarker) return;
 
-  const vision = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm"
+  setStatus("正在下載分析元件…", "第一次開啟需要網路，之後瀏覽器通常會快取。");
+
+  const vision = await FilesetResolver.forVisionTasks(WASM_URL);
+
+  setStatus("正在載入人體模型…", "手機／平板相容模式：CPU + Lite Pose 模型");
+
+  // CPU is deliberately used first for wider Android/iOS/tablet compatibility.
+  poseLandmarker = await PoseLandmarker.createFromModelPath(
+    vision,
+    MODEL_URL
   );
 
-  poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-    baseOptions: {
-      modelAssetPath: MODEL_URL,
-      delegate: "GPU"
-    },
+  await poseLandmarker.setOptions({
     runningMode: "VIDEO",
     numPoses: 2,
-    minPoseDetectionConfidence: 0.5,
-    minPosePresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5
+    minPoseDetectionConfidence: 0.45,
+    minPosePresenceConfidence: 0.45,
+    minTrackingConfidence: 0.45
   });
 
-  statusEl.textContent = "模型已就緒";
+  setStatus("模型已就緒 ✓", "請允許瀏覽器使用相機。");
 }
 
 async function listCameras() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const cams = devices.filter(d => d.kind === "videoinput");
+
+    const currentId = stream?.getVideoTracks?.()[0]?.getSettings?.().deviceId || "";
     cameraSelect.innerHTML = "";
+
     cams.forEach((cam, index) => {
-      const opt = document.createElement("option");
-      opt.value = cam.deviceId;
-      opt.textContent = cam.label || `相機 ${index + 1}`;
-      cameraSelect.appendChild(opt);
+      const option = document.createElement("option");
+      option.value = cam.deviceId;
+      option.textContent = cam.label || `相機 ${index + 1}`;
+      if (cam.deviceId === currentId) option.selected = true;
+      cameraSelect.appendChild(option);
     });
-  } catch (e) {
-    console.warn(e);
+
+    cameraSelect.disabled = cams.length < 2;
+    flipBtn.disabled = cams.length < 2;
+  } catch (err) {
+    console.warn("enumerateDevices failed", err);
   }
 }
 
-async function startCamera() {
-  if (!poseLandmarker) {
-    statusEl.textContent = "模型尚未就緒";
+function stopTracks() {
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+    stream = null;
+  }
+  video.srcObject = null;
+}
+
+async function openCamera({ deviceId = "", facing = facingMode } = {}) {
+  stopTracks();
+
+  setStatus("正在開啟相機…", "若瀏覽器詢問權限，請選「允許」。");
+
+  const baseVideo = {
+    width: { ideal: 960 },
+    height: { ideal: 720 },
+    frameRate: { ideal: 24, max: 30 }
+  };
+
+  if (deviceId) {
+    baseVideo.deviceId = { exact: deviceId };
+  } else {
+    baseVideo.facingMode = { ideal: facing };
+  }
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: baseVideo
+    });
+  } catch (firstError) {
+    console.warn("Preferred camera constraints failed, retrying basic video.", firstError);
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: true
+    });
+  }
+
+  video.srcObject = stream;
+  video.muted = true;
+  video.setAttribute("playsinline", "");
+  await video.play();
+
+  await new Promise(resolve => {
+    if (video.readyState >= 2 && video.videoWidth > 0) {
+      resolve();
+      return;
+    }
+    video.addEventListener("loadedmetadata", resolve, { once: true });
+  });
+
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+
+  const settings = stream.getVideoTracks()[0]?.getSettings?.() || {};
+  if (settings.facingMode) facingMode = settings.facingMode;
+
+  // Front camera is mirrored for natural selfie behavior; rear camera is not.
+  const mirror = facingMode !== "environment";
+  video.style.transform = mirror ? "scaleX(-1)" : "none";
+  canvas.style.transform = mirror ? "scaleX(-1)" : "none";
+
+  placeholder.hidden = true;
+  await listCameras();
+}
+
+async function startAnalysis() {
+  if (starting || running) return;
+
+  if (!window.isSecureContext) {
+    setStatus("無法啟動", "相機需要 HTTPS。請使用 GitHub Pages 的 https:// 網址。");
     return;
   }
 
-  stopCamera();
+  if (!navigator.mediaDevices?.getUserMedia) {
+    setStatus("此瀏覽器不支援相機", "請使用最新版 Chrome、Safari、Samsung Internet 或 Edge。");
+    return;
+  }
 
-  const selected = cameraSelect.value;
-  const constraints = {
-    audio: false,
-    video: selected
-      ? { deviceId: { exact: selected }, width: { ideal: 1280 }, height: { ideal: 720 } }
-      : { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }
-  };
+  starting = true;
+  startBtn.disabled = true;
 
   try {
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
-    video.srcObject = stream;
-    await video.play();
-
-    await listCameras();
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    await initPoseModel();
+    await openCamera({ facing: facingMode });
 
     running = true;
-    startBtn.disabled = true;
     stopBtn.disabled = false;
-    statusEl.textContent = "即時分析中";
-    requestAnimationFrame(predict);
-  } catch (e) {
-    console.error(e);
-    statusEl.textContent = `無法開啟相機：${e.name}`;
+    setStatus("即時分析中 ✓", "請讓全身盡量進入畫面。");
+    lastVideoTime = -1;
+    lastInferenceAt = 0;
+    animationId = requestAnimationFrame(predict);
+  } catch (err) {
+    console.error(err);
+    stopTracks();
+    setStatus("啟動失敗", friendlyError(err));
+    startBtn.disabled = false;
+  } finally {
+    starting = false;
   }
 }
 
-function stopCamera() {
+function stopAnalysis() {
   running = false;
-  if (stream) {
-    stream.getTracks().forEach(t => t.stop());
-    stream = null;
-  }
+  if (animationId) cancelAnimationFrame(animationId);
+  animationId = null;
+
+  stopTracks();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  resetMetrics();
+
+  placeholder.hidden = false;
   startBtn.disabled = false;
   stopBtn.disabled = true;
+  flipBtn.disabled = true;
+  cameraSelect.disabled = true;
+  setStatus("已停止", "按「啟動分析」可再次開始。");
 }
 
-async function predict() {
+async function switchCameraByFacing() {
   if (!running) return;
 
-  if (video.currentTime !== lastVideoTime) {
-    lastVideoTime = video.currentTime;
-    const nowMs = performance.now();
+  facingMode = facingMode === "user" ? "environment" : "user";
+  running = false;
 
-    const result = poseLandmarker.detectForVideo(video, nowMs);
+  try {
+    await openCamera({ facing: facingMode });
+    running = true;
+    lastVideoTime = -1;
+    lastInferenceAt = 0;
+    setStatus("已切換相機 ✓", facingMode === "environment" ? "目前偏好後鏡頭" : "目前偏好前鏡頭");
+    animationId = requestAnimationFrame(predict);
+  } catch (err) {
+    console.error(err);
+    setStatus("切換相機失敗", friendlyError(err));
+    running = true;
+    animationId = requestAnimationFrame(predict);
+  }
+}
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+async function switchCameraByDevice() {
+  if (!running || !cameraSelect.value) return;
 
-    const drawingUtils = new DrawingUtils(ctx);
+  running = false;
 
-    if (result.landmarks?.length) {
-      for (const lm of result.landmarks) {
-        drawingUtils.drawConnectors(
-          lm,
-          PoseLandmarker.POSE_CONNECTIONS,
-          { lineWidth: 3 }
-        );
-        drawingUtils.drawLandmarks(
-          lm,
-          { radius: 4, lineWidth: 2 }
-        );
-      }
+  try {
+    await openCamera({ deviceId: cameraSelect.value });
+    running = true;
+    lastVideoTime = -1;
+    lastInferenceAt = 0;
+    setStatus("相機已切換 ✓");
+    animationId = requestAnimationFrame(predict);
+  } catch (err) {
+    console.error(err);
+    setStatus("切換相機失敗", friendlyError(err));
+    running = true;
+    animationId = requestAnimationFrame(predict);
+  }
+}
 
-      // Detailed metrics are shown for the first detected person.
-      showAnalysis(result.landmarks[0]);
-    } else {
-      headEl.textContent = "—";
-      shoulderEl.textContent = "—";
-      hipEl.textContent = "—";
-      leftKneeEl.textContent = "—";
-      rightKneeEl.textContent = "—";
-      supportEl.textContent = "—";
-    }
+function drawResults(result) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (!result?.landmarks?.length) {
+    resetMetrics();
+    return;
   }
 
-  requestAnimationFrame(predict);
+  const drawingUtils = new DrawingUtils(ctx);
+
+  for (const lm of result.landmarks) {
+    drawingUtils.drawConnectors(
+      lm,
+      PoseLandmarker.POSE_CONNECTIONS,
+      { lineWidth: 3 }
+    );
+    drawingUtils.drawLandmarks(
+      lm,
+      { radius: 4, lineWidth: 2 }
+    );
+  }
+
+  showAnalysis(result.landmarks[0]);
 }
 
-startBtn.addEventListener("click", startCamera);
-stopBtn.addEventListener("click", stopCamera);
-cameraSelect.addEventListener("change", () => {
-  if (running) startCamera();
+function predict(now) {
+  if (!running) return;
+
+  animationId = requestAnimationFrame(predict);
+
+  if (
+    video.readyState < 2 ||
+    video.currentTime === lastVideoTime ||
+    now - lastInferenceAt < MIN_INFERENCE_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  lastVideoTime = video.currentTime;
+  lastInferenceAt = now;
+
+  try {
+    const result = poseLandmarker.detectForVideo(video, performance.now());
+    drawResults(result);
+  } catch (err) {
+    console.error("Inference error", err);
+    setStatus("分析暫停", friendlyError(err));
+  }
+}
+
+startBtn.addEventListener("click", startAnalysis);
+stopBtn.addEventListener("click", stopAnalysis);
+flipBtn.addEventListener("click", switchCameraByFacing);
+cameraSelect.addEventListener("change", switchCameraByDevice);
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && running) {
+    // Mobile browsers may suspend camera in background; stop cleanly.
+    stopAnalysis();
+    setStatus("已暫停", "切回頁面後請重新按「啟動分析」。");
+  }
 });
 
-if (!navigator.mediaDevices?.getUserMedia) {
-  statusEl.textContent = "此瀏覽器不支援相機 API";
-  startBtn.disabled = true;
-} else {
-  createPoseLandmarker()
-    .then(listCameras)
-    .catch(err => {
-      console.error(err);
-      statusEl.textContent = "模型載入失敗，請檢查網路或瀏覽器主控台";
-    });
-}
+window.addEventListener("pagehide", () => {
+  if (running || stream) stopTracks();
+});
+
+setStatus("等待啟動", "支援 Android 手機／平板、iPhone／iPad 與桌面瀏覽器。");

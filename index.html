@@ -2,44 +2,63 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#111111" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>人體姿態即時分析</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=2" />
 </head>
 <body>
   <main>
-    <h1>人體姿態即時分析</h1>
-    <p class="lead">瀏覽器直接開啟相機；影像在裝置端分析，不需要 Python 伺服器。</p>
+    <header>
+      <h1>人體姿態即時分析</h1>
+      <p class="lead">手機／平板／電腦瀏覽器直接分析人體姿態。影像在裝置端處理。</p>
+    </header>
 
-    <div class="controls">
-      <button id="startBtn">啟動相機</button>
+    <section class="controls" aria-label="相機控制">
+      <button id="startBtn" class="primary">啟動分析</button>
       <button id="stopBtn" disabled>停止</button>
-      <label>
+      <button id="flipBtn" disabled>切換前／後鏡頭</button>
+
+      <label class="camera-label">
         相機
-        <select id="cameraSelect"></select>
+        <select id="cameraSelect" disabled>
+          <option value="">預設相機</option>
+        </select>
       </label>
-    </div>
+    </section>
+
+    <section class="status-box">
+      <strong>狀態：</strong>
+      <span id="status">等待啟動</span>
+      <small id="detail"></small>
+    </section>
 
     <section class="stage">
-      <video id="video" playsinline muted></video>
+      <video id="video" playsinline muted autoplay></video>
       <canvas id="canvas"></canvas>
+      <div id="placeholder" class="placeholder">
+        <div>📷</div>
+        <p>按「啟動分析」並允許相機權限</p>
+      </div>
     </section>
 
     <section class="panel">
-      <div><strong>狀態：</strong><span id="status">載入模型中…</span></div>
-      <div><strong>頭部方向：</strong><span id="head">—</span></div>
-      <div><strong>肩膀傾斜：</strong><span id="shoulder">—</span></div>
-      <div><strong>髖部傾斜：</strong><span id="hip">—</span></div>
-      <div><strong>左膝角：</strong><span id="leftKnee">—</span></div>
-      <div><strong>右膝角：</strong><span id="rightKnee">—</span></div>
-      <div><strong>支撐腳：</strong><span id="support">—</span></div>
+      <div><strong>頭部方向</strong><span id="head">—</span></div>
+      <div><strong>肩膀傾斜</strong><span id="shoulder">—</span></div>
+      <div><strong>髖部傾斜</strong><span id="hip">—</span></div>
+      <div><strong>左膝角</strong><span id="leftKnee">—</span></div>
+      <div><strong>右膝角</strong><span id="rightKnee">—</span></div>
+      <div><strong>支撐腳</strong><span id="support">—</span></div>
     </section>
 
     <p class="note">
-      試用版：角度與支撐腳為 2D 影像估計，不等同醫療或臨床生物力學量測。
+      試用版：頭部方向、角度與支撐腳均為 2D 影像推估，不可作為醫療或臨床診斷。
     </p>
   </main>
 
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=2"></script>
 </body>
 </html>

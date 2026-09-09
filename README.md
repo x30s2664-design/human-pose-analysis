@@ -1,68 +1,49 @@
-# GitHub Pages 人體姿態即時分析
+# 人體姿態即時分析 — Mobile / Tablet V2
 
-這個版本是純 HTML / CSS / JavaScript，可直接部署到 GitHub Pages。
+此版本專門調整為 GitHub Pages 上的手機／平板瀏覽器使用。
 
-## 為什麼不用 Python？
+## V2 修正
 
-GitHub Pages 是靜態網站託管，不能直接執行 Python 伺服器程式。
-因此這版改成 MediaPipe Tasks Vision，在使用者自己的瀏覽器中執行人體姿態分析。
+- 不在頁面載入時自動初始化模型，避免手機停在「載入模型中」
+- 使用 MediaPipe Tasks Vision 1.0.1
+- 使用 Pose Landmarker Lite
+- CPU 優先，提升 Android / iOS / 平板相容性
+- 按下「啟動分析」後才載入模型與要求相機權限
+- 支援前／後鏡頭切換
+- 相機權限後可列出裝置相機
+- 手機分析頻率限制，降低發熱與瀏覽器卡頓
+- 顯示更完整的模型、相機與錯誤狀態
+- 支援安全區域（iPhone / iPad）
+- 手機與平板響應式版面
 
-## 功能
+## GitHub 更新方式
 
-- 瀏覽器直接使用 Webcam / 手機相機
-- MediaPipe Pose Landmarker
-- 人體骨架
-- 頭部粗略方向
-- 肩膀傾斜
-- 髖部傾斜
-- 左右膝角度
-- 粗略支撐腳
-- 支援最多 2 人姿態偵測
+將下列檔案覆蓋 repository 根目錄的舊版本：
 
-## GitHub Pages 部署
+- `index.html`
+- `app.js`
+- `style.css`
+- `.nojekyll`
 
-1. 在 GitHub 建立新 repository，例如：
+README.md 可一起更新，也可以保留原本 README。
 
-   `human-pose-web`
+GitHub Pages 不需要重新設定。Commit 後等待 Pages 自動重新部署。
 
-2. 將下列檔案上傳到 repository 根目錄：
+## 使用方式
 
-   - `index.html`
-   - `style.css`
-   - `app.js`
-   - `.nojekyll`
+1. 用 HTTPS GitHub Pages 網址開啟。
+2. 按「啟動分析」。
+3. 等待模型載入。
+4. 瀏覽器詢問 Camera 時按「允許」。
+5. 人體進入畫面即可顯示骨架與分析數據。
+6. 可按「切換前／後鏡頭」。
 
-3. GitHub repository → `Settings` → `Pages`
+## 建議瀏覽器
 
-4. `Build and deployment`：
-   - Source：`Deploy from a branch`
-   - Branch：`main`
-   - Folder：`/ (root)`
-
-5. 儲存後即可用：
-
-   `https://你的GitHub帳號.github.io/human-pose-web/`
-
-## 使用
-
-開啟網頁後：
-
-1. 等待「模型已就緒」
-2. 按「啟動相機」
-3. 允許瀏覽器使用相機
-4. 人體進入畫面後即可即時分析
-
-## 網路需求
-
-第一次載入需要網路，因為網頁會從 CDN 載入 MediaPipe JavaScript / WASM，
-並下載 Pose Landmarker 模型。
-
-## 相機權限
-
-瀏覽器的 `getUserMedia()` 通常要求安全來源（HTTPS）。
-GitHub Pages 提供 HTTPS，因此適合直接使用相機。
+- Android：Chrome / Samsung Internet / Edge
+- iPhone / iPad：Safari 或最新版 Chrome
+- 桌面：Chrome / Edge / Safari
 
 ## 注意
 
-這是試用版。所有人體角度與支撐腳判定都是 2D 影像估計，
-不能當作醫療、臨床或正式生物力學診斷結果。
+所有數據為 2D 影像推估，不可作為醫療、臨床或正式生物力學診斷。
