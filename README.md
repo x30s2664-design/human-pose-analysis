@@ -418,3 +418,20 @@ V14 改為：
 握持姿態 fallback 是「probable holding」，不是 object recognition。
 若需要桌球拍全自動精準 bbox / mask，仍需自訂桌球拍 detector 或
 open-vocabulary / segmentation 模型。
+
+
+## V16：手機／平板全螢幕分析
+
+新增沉浸式分析模式：
+
+- 啟動分析後可按「全螢幕分析」。
+- 支援標準 Fullscreen API；不支援時自動使用 CSS 沉浸式滿版。
+- 全螢幕隱藏頁面設定區，只保留相機、Canvas、HUD 與必要控制。
+- HUD 顯示持物狀態、展延狀態與 PPS 比例。
+- 全螢幕內可切換鏡頭與退出。
+- 使用 `100dvh` 適應手機瀏覽器動態工具列。
+- video / canvas 均維持 `object-fit: contain`，避免相機畫面被裁切後骨架、
+  PPS 與物件框座標錯位。
+
+注意：手機瀏覽器是否能完全隱藏網址列由瀏覽器政策決定；
+即使 Fullscreen API 被拒絕，CSS 沉浸模式仍會把分析區填滿目前可視畫面。

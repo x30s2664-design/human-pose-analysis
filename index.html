@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>人體姿態與空間分析</title>
-  <link rel="stylesheet" href="style.css?v=15" />
+  <link rel="stylesheet" href="style.css?v=16" />
 </head>
 <body>
   <main>
@@ -21,6 +21,7 @@
       <button id="startBtn" class="primary">啟動分析</button>
       <button id="stopBtn" disabled>停止</button>
       <button id="flipBtn" disabled>切換前／後鏡頭</button>
+      <button id="fullscreenBtn" disabled>全螢幕分析</button>
 
       <label class="camera-label">
         相機
@@ -39,6 +40,16 @@
     <section class="stage">
       <video id="video" playsinline muted autoplay></video>
       <canvas id="canvas"></canvas>
+      <div id="analysisHud" class="analysis-hud" hidden>
+        <strong>即時分析</strong>
+        <span id="hudObject">持物：—</span>
+        <span id="hudExtension">展延：—</span>
+        <span id="hudPps">PPS：0.18 × 身寬</span>
+      </div>
+      <div class="stage-actions">
+        <button id="stageFlipBtn" type="button" hidden>切換鏡頭</button>
+        <button id="exitFullscreenBtn" type="button" hidden>退出全螢幕</button>
+      </div>
       <div id="placeholder" class="placeholder">
         <div>📷</div>
         <p>按「啟動分析」並允許相機權限</p>
@@ -114,7 +125,7 @@
 
         <small class="extension-note">
           自動模式：物件框＋手部接觸優先；空手時自動關閉。若物件模型完全漏掉特殊工具，只有在你明確選了工具類型時，才允許「握持姿態推定」fallback。
-          <br>框線：綠色＝已確認持物、黃色＝持物候選、藍色＝已偵測物件。自動模式的展延方向直接依物件框，不再依前臂方向猜測。若模型不支援桌球拍等類別，可按「手動框選持物」拖曳框出物件；V15：本體優先使用 Pose segmentation 真實人形遮罩，近體由人形遮罩向外膨脹，遠體是 PPS 外部。持物優先使用物件框＋手部接觸；若桌球拍完全沒有物件框，且你明確選「桌球拍」等工具類型，系統可用連續握持姿態作為「推定持物」fallback。推定模式會明確標示，避免把推定當成物件辨識。
+          <br>框線：綠色＝已確認持物、黃色＝持物候選、藍色＝已偵測物件。自動模式的展延方向直接依物件框，不再依前臂方向猜測。若模型不支援桌球拍等類別，可按「手動框選持物」拖曳框出物件；V16：保留 V15 segmentation / 持物判斷，新增手機與平板沉浸式全螢幕分析。持物優先使用物件框＋手部接觸；若桌球拍完全沒有物件框，且你明確選「桌球拍」等工具類型，系統可用連續握持姿態作為「推定持物」fallback。推定模式會明確標示，避免把推定當成物件辨識。
         </small>
       </div>
     </section>
@@ -134,6 +145,6 @@
     </p>
   </main>
 
-  <script type="module" src="app.js?v=15"></script>
+  <script type="module" src="app.js?v=16"></script>
 </body>
 </html>

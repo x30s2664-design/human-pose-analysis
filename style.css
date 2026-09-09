@@ -363,3 +363,141 @@ canvas {
     flex: 1 1 140px;
   }
 }
+
+
+/* V16: immersive fullscreen analysis */
+.analysis-hud,
+.stage-actions {
+  position: absolute;
+  z-index: 8;
+}
+
+.analysis-hud {
+  left: max(10px, env(safe-area-inset-left));
+  top: max(10px, env(safe-area-inset-top));
+  display: grid;
+  gap: 3px;
+  max-width: min(70vw, 420px);
+  padding: 9px 11px;
+  border: 1px solid rgba(255,255,255,.2);
+  border-radius: 10px;
+  background: rgba(0,0,0,.52);
+  color: #fff;
+  font-size: clamp(12px, 2.6vw, 15px);
+  line-height: 1.35;
+  pointer-events: none;
+  backdrop-filter: blur(5px);
+}
+
+.analysis-hud[hidden] {
+  display: none !important;
+}
+
+.analysis-hud strong {
+  color: #fff;
+}
+
+.analysis-hud span {
+  color: #ddd;
+}
+
+.stage-actions {
+  right: max(10px, env(safe-area-inset-right));
+  top: max(10px, env(safe-area-inset-top));
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.stage-actions button {
+  min-height: 40px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(255,255,255,.28);
+  background: rgba(0,0,0,.58);
+  color: #fff;
+  font-size: 14px;
+  backdrop-filter: blur(5px);
+}
+
+.stage-actions button[hidden] {
+  display: none !important;
+}
+
+/* CSS immersive mode works even when the browser rejects the Fullscreen API. */
+body.analysis-fullscreen {
+  overflow: hidden;
+  background: #000;
+  padding: 0 !important;
+}
+
+body.analysis-fullscreen main {
+  width: 100vw;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+}
+
+body.analysis-fullscreen main > header,
+body.analysis-fullscreen .controls,
+body.analysis-fullscreen .status-box,
+body.analysis-fullscreen .space-controls,
+body.analysis-fullscreen .panel,
+body.analysis-fullscreen .note {
+  display: none !important;
+}
+
+body.analysis-fullscreen .stage {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  width: 100vw;
+  height: 100dvh;
+  max-height: none;
+  aspect-ratio: auto;
+  border-radius: 0;
+  background: #000;
+}
+
+/*
+  Keep contain for both video and canvas.
+  MediaPipe coordinates are based on the complete camera frame, so forcing
+  object-fit: cover here would crop the video while leaving landmark
+  coordinates uncropped and would make skeleton/PPS/object boxes drift.
+*/
+body.analysis-fullscreen .stage video,
+body.analysis-fullscreen .stage canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+body.analysis-fullscreen .analysis-hud {
+  display: grid;
+}
+
+@media (orientation: landscape) {
+  body.analysis-fullscreen .analysis-hud {
+    max-width: min(42vw, 380px);
+  }
+}
+
+/* Fullscreen element styling for browsers that support requestFullscreen(). */
+.stage:fullscreen,
+.stage:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  aspect-ratio: auto;
+  border-radius: 0;
+  background: #000;
+}
+
+.stage:fullscreen video,
+.stage:fullscreen canvas,
+.stage:-webkit-full-screen video,
+.stage:-webkit-full-screen canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}

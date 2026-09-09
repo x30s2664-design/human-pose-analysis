@@ -50,6 +50,14 @@ const objectDetectionStatusEl = document.getElementById("objectDetectionStatus")
 const manualBoxBtn = document.getElementById("manualBoxBtn");
 const clearManualBoxBtn = document.getElementById("clearManualBoxBtn");
 const manualBoxStatusEl = document.getElementById("manualBoxStatus");
+const fullscreenBtn = document.getElementById("fullscreenBtn");
+const exitFullscreenBtn = document.getElementById("exitFullscreenBtn");
+const stageFlipBtn = document.getElementById("stageFlipBtn");
+const analysisHud = document.getElementById("analysisHud");
+const hudObject = document.getElementById("hudObject");
+const hudExtension = document.getElementById("hudExtension");
+const hudPps = document.getElementById("hudPps");
+const stageEl = document.querySelector(".stage");
 
 
 
@@ -127,6 +135,99 @@ const NON_HOLDABLE_LABELS = new Set([
 const KNOWN_HOLD_THRESHOLD = 0.46;
 const UNKNOWN_HOLD_THRESHOLD = 0.56;
 
+
+
+function isFullscreenActive() {
+  return !!(
+    document.fullscreenElement ||
+    document.webkitFullscreenElement ||
+    document.body.classList.contains("analysis-fullscreen")
+  );
+}
+
+function syncFullscreenUi() {
+  const active = isFullscreenActive();
+  document.body.classList.toggle("analysis-fullscreen", active);
+
+  if (analysisHud) analysisHud.hidden = !active;
+  if (exitFullscreenBtn) exitFullscreenBtn.hidden = !active;
+  if (stageFlipBtn) stageFlipBtn.hidden = !active || !running;
+  if (fullscreenBtn) {
+    fullscreenBtn.textContent = active ? "退出全螢幕" : "全螢幕分析";
+    fullscreenBtn.disabled = !running;
+  }
+}
+
+async function enterImmersiveAnalysis() {
+  if (!running || !stageEl) return;
+
+  // CSS immersive mode is the reliable fallback on mobile browsers.
+  document.body.classList.add("analysis-fullscreen");
+  syncFullscreenUi();
+
+  try {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      if (stageEl.requestFullscreen) {
+        await stageEl.requestFullscreen({ navigationUI: "hide" });
+      } else if (stageEl.webkitRequestFullscreen) {
+        stageEl.webkitRequestFullscreen();
+      }
+    }
+  } catch (err) {
+    // Browsers such as iOS Safari may reject Fullscreen API. CSS mode remains.
+    console.warn("Fullscreen API unavailable; using immersive CSS mode.", err);
+  }
+
+  syncFullscreenUi();
+}
+
+async function exitImmersiveAnalysis() {
+  document.body.classList.remove("analysis-fullscreen");
+
+  try {
+    if (document.fullscreenElement && document.exitFullscreen) {
+      await document.exitFullscreen();
+    } else if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    }
+  } catch (err) {
+    console.warn("Exit fullscreen failed", err);
+  }
+
+  syncFullscreenUi();
+}
+
+async function toggleImmersiveAnalysis() {
+  if (isFullscreenActive()) {
+    await exitImmersiveAnalysis();
+  } else {
+    await enterImmersiveAnalysis();
+  }
+}
+
+function updateAnalysisHud() {
+  if (hudPps && ppsScaleEl) {
+    hudPps.textContent = `PPS：${Number(ppsScaleEl.value).toFixed(2)} × 身寬`;
+  }
+
+  if (hudObject) {
+    if (confirmedHeldObject?.gripProxy) {
+      const pct = Math.round((confirmedHeldObject.contactScore || 0) * 100);
+      hudObject.textContent = `持物：握持姿態推定 ${pct}%`;
+    } else if (confirmedHeldObject) {
+      const shown = confirmedHeldObject.genericObject
+        ? `未知持物 / ${confirmedHeldObject.label}`
+        : confirmedHeldObject.label;
+      hudObject.textContent = `持物：${shown}`;
+    } else {
+      hudObject.textContent = "持物：未確認";
+    }
+  }
+
+  if (hudExtension && extensionStatusEl) {
+    hudExtension.textContent = `展延：${extensionStatusEl.textContent || "—"}`;
+  }
+}
 
 function setStatus(text, detail = "") {
   statusEl.textContent = text;
@@ -1868,6 +1969,8 @@ async function startAnalysis() {
 
     running = true;
     stopBtn.disabled = false;
+    if (fullscreenBtn) fullscreenBtn.disabled = false;
+    if (stageFlipBtn) stageFlipBtn.hidden = !isFullscreenActive();
     setStatus("即時分析中 ✓", "請讓全身盡量進入畫面。");
     lastVideoTime = -1;
     lastInferenceAt = 0;
@@ -1884,6 +1987,16 @@ async function startAnalysis() {
 
 function stopAnalysis() {
   running = false;
+  document.body.classList.remove("analysis-fullscreen");
+  if (document.fullscreenElement && document.exitFullscreen) {
+    document.exitFullscreen().catch(() => {});
+  } else if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
+    try { document.webkitExitFullscreen(); } catch (_) {}
+  }
+  if (fullscreenBtn) fullscreenBtn.disabled = true;
+  if (analysisHud) analysisHud.hidden = true;
+  if (exitFullscreenBtn) exitFullscreenBtn.hidden = true;
+  if (stageFlipBtn) stageFlipBtn.hidden = true;
   if (animationId) cancelAnimationFrame(animationId);
   animationId = null;
 
@@ -2348,6 +2461,7 @@ function drawResults(result) {
   }
 
   showAnalysis(result.landmarks[0]);
+  updateAnalysisHud();
 }
 
 function predict(now) {
@@ -2388,6 +2502,7 @@ function predict(now) {
 if (ppsScaleEl && ppsScaleValueEl) {
   const updatePpsScaleLabel = () => {
     ppsScaleValueEl.textContent = `${Number(ppsScaleEl.value).toFixed(2)} × 身寬`;
+    updateAnalysisHud();
   };
   ppsScaleEl.addEventListener("input", updatePpsScaleLabel);
   updatePpsScaleLabel();
@@ -2485,6 +2600,18 @@ canvas.addEventListener("pointerup", (event) => {
 
 canvas.addEventListener("pointercancel", () => {
   if (manualBoxDrawing) endManualBoxMode();
+});
+
+fullscreenBtn?.addEventListener("click", toggleImmersiveAnalysis);
+exitFullscreenBtn?.addEventListener("click", exitImmersiveAnalysis);
+stageFlipBtn?.addEventListener("click", switchCameraByFacing);
+
+document.addEventListener("fullscreenchange", syncFullscreenUi);
+document.addEventListener("webkitfullscreenchange", syncFullscreenUi);
+
+window.addEventListener("orientationchange", () => {
+  // Let mobile browser settle its viewport before recalculating overlays.
+  setTimeout(syncFullscreenUi, 120);
 });
 
 startBtn.addEventListener("click", startAnalysis);
