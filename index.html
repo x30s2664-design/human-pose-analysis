@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>人體姿態即時分析</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>人體姿態即時分析</h1>
+    <p class="lead">瀏覽器直接開啟相機；影像在裝置端分析，不需要 Python 伺服器。</p>
+
+    <div class="controls">
+      <button id="startBtn">啟動相機</button>
+      <button id="stopBtn" disabled>停止</button>
+      <label>
+        相機
+        <select id="cameraSelect"></select>
+      </label>
+    </div>
+
+    <section class="stage">
+      <video id="video" playsinline muted></video>
+      <canvas id="canvas"></canvas>
+    </section>
+
+    <section class="panel">
+      <div><strong>狀態：</strong><span id="status">載入模型中…</span></div>
+      <div><strong>頭部方向：</strong><span id="head">—</span></div>
+      <div><strong>肩膀傾斜：</strong><span id="shoulder">—</span></div>
+      <div><strong>髖部傾斜：</strong><span id="hip">—</span></div>
+      <div><strong>左膝角：</strong><span id="leftKnee">—</span></div>
+      <div><strong>右膝角：</strong><span id="rightKnee">—</span></div>
+      <div><strong>支撐腳：</strong><span id="support">—</span></div>
+    </section>
+
+    <p class="note">
+      試用版：角度與支撐腳為 2D 影像估計，不等同醫療或臨床生物力學量測。
+    </p>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
