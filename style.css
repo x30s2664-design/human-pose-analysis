@@ -202,3 +202,123 @@ canvas {
 .placeholder[hidden] {
   display: none !important;
 }
+
+
+/* V3: body / peripersonal / extrapersonal space */
+.space-controls {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: #1e1e1e;
+  border-radius: 12px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.legend span {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  font-weight: 700;
+}
+
+.dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.body-dot { background: rgba(255, 80, 80, .9); }
+.peri-dot { background: rgba(255, 210, 70, .9); }
+.extra-dot { background: rgba(80, 150, 255, .9); }
+
+.range-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  color: #ddd;
+}
+
+.range-row input {
+  width: 100%;
+}
+
+@media (max-width: 520px) {
+  .range-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* V4: tool-use extension zone */
+.extension-dot { background: rgba(80, 230, 150, .95); }
+
+.extension-controls {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #3a3a3a;
+}
+
+.toggle-row,
+.select-row {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.toggle-row input[type="checkbox"] {
+  width: 24px;
+  height: 24px;
+  justify-self: start;
+}
+
+.select-row select {
+  width: 100%;
+  min-height: 44px;
+}
+
+@media (max-width: 520px) {
+  .toggle-row,
+  .select-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* V5: auto object-confirmed extension */
+.detection-row {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+}
+
+.detection-row strong {
+  justify-self: end;
+  overflow-wrap: anywhere;
+}
+
+.extension-note {
+  color: #aaa;
+  line-height: 1.55;
+}
+
+@media (max-width: 520px) {
+  .detection-row {
+    grid-template-columns: 1fr;
+  }
+  .detection-row strong {
+    justify-self: start;
+  }
+}

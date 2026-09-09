@@ -1,6 +1,7 @@
 import {
   FilesetResolver,
   PoseLandmarker,
+  ObjectDetector,
   DrawingUtils
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/+esm";
 
@@ -9,6 +10,9 @@ const WASM_URL =
 
 const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+
+const OBJECT_MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite";
 
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
@@ -29,7 +33,28 @@ const leftKneeEl = document.getElementById("leftKnee");
 const rightKneeEl = document.getElementById("rightKnee");
 const supportEl = document.getElementById("support");
 
+const ppsScaleEl = document.getElementById("ppsScale");
+const ppsScaleValueEl = document.getElementById("ppsScaleValue");
+
+const extensionModeEl = document.getElementById("extensionMode");
+const toolTypeEl = document.getElementById("toolType");
+const toolHandEl = document.getElementById("toolHand");
+const extensionScaleEl = document.getElementById("extensionScale");
+const extensionScaleValueEl = document.getElementById("extensionScaleValue");
+const extensionStatusEl = document.getElementById("extensionStatus");
+const objectDetectionStatusEl = document.getElementById("objectDetectionStatus");
+
+
+
 let poseLandmarker = null;
+let objectDetector = null;
+let objectDetectorLoading = false;
+let lastObjectDetectionAt = 0;
+let latestObjects = [];
+let currentHoldCandidate = null;
+let holdConfirmFrames = 0;
+let holdMissFrames = 0;
+let confirmedHeldObject = null;
 let stream = null;
 let running = false;
 let starting = false;
@@ -40,6 +65,24 @@ let animationId = null;
 
 // Mobile/tablet: limiting inference rate reduces heat and browser stalls.
 const MIN_INFERENCE_INTERVAL_MS = 85;
+const OBJECT_INFERENCE_INTERVAL_MS = 450;
+
+// Hysteresis: avoid extension flicker.
+// Detection must be confirmed across multiple object-detection cycles.
+const HOLD_CONFIRM_CYCLES = 2;
+const HOLD_RELEASE_CYCLES = 3;
+
+// COCO / EfficientDet Lite0 supported categories that can plausibly extend action space.
+// Tennis racket is the primary target. Pen is not a COCO class, so pen remains manual/custom.
+const EXTENDABLE_OBJECT_LABELS = new Set([
+  "tennis racket",
+  "baseball bat",
+  "scissors",
+  "knife",
+  "fork",
+  "spoon",
+  "toothbrush"
+]);
 
 function setStatus(text, detail = "") {
   statusEl.textContent = text;
@@ -53,6 +96,7 @@ function resetMetrics() {
   leftKneeEl.textContent = "—";
   rightKneeEl.textContent = "—";
   supportEl.textContent = "—";
+  if (extensionStatusEl) extensionStatusEl.textContent = extensionModeEl?.value === "off" ? "關閉" : "等待人體";
 }
 
 function friendlyError(err) {
@@ -128,6 +172,286 @@ function supportLeg(lm) {
   return "BOTH";
 }
 
+
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function landmarkPixels(lm) {
+  return lm.map(p => ({
+    x: p.x * canvas.width,
+    y: p.y * canvas.height,
+    visibility: p.visibility ?? 1
+  }));
+}
+
+function bodyBounds(lm) {
+  const pts = landmarkPixels(lm)
+    .filter((p, i) => p.visibility >= 0.35 && i <= 32);
+
+  if (!pts.length) return null;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+
+  const w = Math.max(1, maxX - minX);
+  const h = Math.max(1, maxY - minY);
+
+  return {
+    minX, minY, maxX, maxY, w, h,
+    cx: (minX + maxX) / 2,
+    cy: (minY + maxY) / 2
+  };
+}
+
+
+const TOOL_PRESETS = {
+  racket: { scale: 0.42, width: 0.11, label: "球拍" },
+  pen:    { scale: 0.12, width: 0.025, label: "筆" },
+  tool:   { scale: 0.28, width: 0.055, label: "工具" },
+  custom: { scale: 0.30, width: 0.055, label: "自訂" }
+};
+
+function chooseToolHand(lm, b) {
+  const selected = toolHandEl?.value || "auto";
+  if (selected === "left" || selected === "right") return selected;
+
+  // MediaPipe Pose:
+  // left elbow 13 / wrist 15, right elbow 14 / wrist 16.
+  // AUTO chooses the visible wrist farther from the trunk center,
+  // which often corresponds to the hand actively extending an object.
+  const candidates = [];
+
+  if (visible(lm, 13) && visible(lm, 15)) {
+    const dx = lm[15].x * canvas.width - b.cx;
+    const dy = lm[15].y * canvas.height - b.cy;
+    candidates.push({ hand: "left", score: Math.hypot(dx, dy) });
+  }
+
+  if (visible(lm, 14) && visible(lm, 16)) {
+    const dx = lm[16].x * canvas.width - b.cx;
+    const dy = lm[16].y * canvas.height - b.cy;
+    candidates.push({ hand: "right", score: Math.hypot(dx, dy) });
+  }
+
+  candidates.sort((a, b2) => b2.score - a.score);
+  return candidates[0]?.hand || null;
+}
+
+function toolVectorFromPose(lm, hand) {
+  const elbowIndex = hand === "left" ? 13 : 14;
+  const wristIndex = hand === "left" ? 15 : 16;
+
+  if (!visible(lm, elbowIndex) || !visible(lm, wristIndex)) return null;
+
+  const elbow = {
+    x: lm[elbowIndex].x * canvas.width,
+    y: lm[elbowIndex].y * canvas.height
+  };
+  const wrist = {
+    x: lm[wristIndex].x * canvas.width,
+    y: lm[wristIndex].y * canvas.height
+  };
+
+  let dx = wrist.x - elbow.x;
+  let dy = wrist.y - elbow.y;
+  const length = Math.hypot(dx, dy);
+
+  if (length < 8) return null;
+
+  dx /= length;
+  dy /= length;
+
+  return { elbow, wrist, dx, dy };
+}
+
+function drawRoundedCapsule(start, end, radius) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1) return;
+
+  const nx = -dy / len;
+  const ny = dx / len;
+
+  const p1 = { x: start.x + nx * radius, y: start.y + ny * radius };
+  const p2 = { x: end.x + nx * radius, y: end.y + ny * radius };
+  const p3 = { x: end.x - nx * radius, y: end.y - ny * radius };
+  const p4 = { x: start.x - nx * radius, y: start.y - ny * radius };
+
+  ctx.beginPath();
+  ctx.moveTo(p1.x, p1.y);
+  ctx.lineTo(p2.x, p2.y);
+  ctx.arc(end.x, end.y, radius, Math.atan2(ny, nx), Math.atan2(-ny, -nx), false);
+  ctx.lineTo(p4.x, p4.y);
+  ctx.arc(start.x, start.y, radius, Math.atan2(-ny, -nx), Math.atan2(ny, nx), false);
+  ctx.closePath();
+}
+
+function drawExtensionZone(lm, b) {
+  if (!extensionShouldBeActive()) {
+    if (extensionStatusEl) {
+      extensionStatusEl.textContent =
+        extensionModeEl?.value === "off" ? "關閉" : "未偵測持物";
+    }
+    return;
+  }
+
+  const hand = resolvedExtensionHand(lm, b);
+  if (!hand) {
+    if (extensionStatusEl) extensionStatusEl.textContent = "手部未偵測";
+    return;
+  }
+
+  const vector = toolVectorFromPose(lm, hand);
+  if (!vector) {
+    if (extensionStatusEl) extensionStatusEl.textContent = "等待手臂";
+    return;
+  }
+
+  const toolType = resolvedToolType();
+  const preset = TOOL_PRESETS[toolType] || TOOL_PRESETS.custom;
+  const scale = parseFloat(extensionScaleEl?.value || String(preset.scale));
+
+  // Tool-use extension is estimated from body height so it remains responsive
+  // on phone/tablet cameras without requiring metric calibration.
+  const toolLengthPx = Math.max(20, b.h * scale);
+  const radius = Math.max(8, b.h * preset.width);
+
+  const start = {
+    x: vector.wrist.x - vector.dx * radius * 0.25,
+    y: vector.wrist.y - vector.dy * radius * 0.25
+  };
+
+  const end = {
+    x: vector.wrist.x + vector.dx * toolLengthPx,
+    y: vector.wrist.y + vector.dy * toolLengthPx
+  };
+
+  ctx.save();
+
+  drawRoundedCapsule(start, end, radius);
+  ctx.fillStyle = "rgba(65, 235, 145, 0.13)";
+  ctx.fill();
+
+  ctx.lineWidth = Math.max(2, canvas.width / 480);
+  ctx.strokeStyle = "rgba(75, 240, 150, 0.98)";
+  ctx.setLineDash([11, 8]);
+  ctx.stroke();
+
+  // Tool axis and endpoint
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(vector.wrist.x, vector.wrist.y);
+  ctx.lineTo(end.x, end.y);
+  ctx.strokeStyle = "rgba(120, 255, 180, 0.92)";
+  ctx.lineWidth = Math.max(2, canvas.width / 650);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(end.x, end.y, Math.max(5, radius * 0.18), 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(120, 255, 180, 1)";
+  ctx.fill();
+
+  const fontSize = Math.max(15, Math.round(canvas.width / 58));
+  ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+  ctx.textBaseline = "bottom";
+  ctx.fillStyle = "rgba(120, 255, 180, 0.98)";
+
+  const labelX = clamp(end.x + 10, 8, canvas.width - fontSize * 6);
+  const labelY = clamp(end.y - 8, fontSize + 8, canvas.height - 8);
+  ctx.fillText(`展延 ${preset.label}`, labelX, labelY);
+
+  ctx.restore();
+
+  if (extensionStatusEl) {
+    extensionStatusEl.textContent =
+      `${hand === "left" ? "左手" : "右手"}・${preset.label}`;
+  }
+}
+
+function drawSpaceZones(lm) {
+  const b = bodyBounds(lm);
+  if (!b) return;
+
+  const scale = parseFloat(ppsScaleEl?.value || "0.42");
+
+  // Trial mapping:
+  // "body space" = detected body envelope.
+  // "peripersonal space" = body-centered envelope expanded by a fraction of detected body height.
+  // Everything outside = extrapersonal space.
+  //
+  // The default 0.42 is a visualization heuristic, roughly relating
+  // ~72 cm peri-trunk PPS to ~170 cm adult body height.
+  const margin = b.h * scale;
+
+  const outerX = clamp(b.minX - margin, 0, canvas.width);
+  const outerY = clamp(b.minY - margin, 0, canvas.height);
+  const outerW = clamp(b.maxX + margin, 0, canvas.width) - outerX;
+  const outerH = clamp(b.maxY + margin, 0, canvas.height) - outerY;
+
+  const bodyPad = Math.max(8, b.w * 0.06);
+  const bodyX = clamp(b.minX - bodyPad, 0, canvas.width);
+  const bodyY = clamp(b.minY - bodyPad, 0, canvas.height);
+  const bodyW = clamp(b.maxX + bodyPad, 0, canvas.width) - bodyX;
+  const bodyH = clamp(b.maxY + bodyPad, 0, canvas.height) - bodyY;
+
+  // FAR / extrapersonal: tint whole frame first.
+  ctx.save();
+  ctx.fillStyle = "rgba(65, 120, 255, 0.08)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // PPS / near body: body-centered rounded ellipse.
+  ctx.beginPath();
+  ctx.ellipse(
+    outerX + outerW / 2,
+    outerY + outerH / 2,
+    Math.max(10, outerW / 2),
+    Math.max(10, outerH / 2),
+    0, 0, Math.PI * 2
+  );
+  ctx.fillStyle = "rgba(255, 210, 60, 0.15)";
+  ctx.fill();
+  ctx.lineWidth = Math.max(2, canvas.width / 500);
+  ctx.strokeStyle = "rgba(255, 220, 80, 0.95)";
+  ctx.setLineDash([12, 9]);
+  ctx.stroke();
+
+  // BODY: tighter body envelope.
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.roundRect(bodyX, bodyY, bodyW, bodyH, Math.max(12, bodyW * 0.08));
+  ctx.fillStyle = "rgba(255, 70, 70, 0.10)";
+  ctx.fill();
+  ctx.lineWidth = Math.max(2, canvas.width / 450);
+  ctx.strokeStyle = "rgba(255, 90, 90, 0.95)";
+  ctx.stroke();
+
+  // Labels
+  const fontSize = Math.max(16, Math.round(canvas.width / 55));
+  ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+  ctx.textBaseline = "top";
+
+  ctx.fillStyle = "rgba(255, 100, 100, 0.98)";
+  ctx.fillText("本體", bodyX + 10, bodyY + 10);
+
+  ctx.fillStyle = "rgba(255, 225, 100, 0.98)";
+  ctx.fillText("近體 PPS", outerX + 10, Math.max(8, outerY + 10));
+
+  ctx.fillStyle = "rgba(120, 175, 255, 0.95)";
+  ctx.fillText("遠體", 12, canvas.height - fontSize - 12);
+
+  ctx.restore();
+
+  // Tool-use/body-schema extension is drawn as a separate functional zone.
+  drawExtensionZone(lm, b);
+}
+
 function showAnalysis(lm) {
   headEl.textContent = headDirection(lm);
   supportEl.textContent = supportLeg(lm);
@@ -151,6 +475,208 @@ function showAnalysis(lm) {
     [24, 26, 28].every(i => visible(lm, i))
       ? deg(jointAngle(lm[24], lm[26], lm[28]))
       : "—";
+}
+
+
+async function initObjectDetector() {
+  if (objectDetector || objectDetectorLoading) return;
+
+  objectDetectorLoading = true;
+  if (objectDetectionStatusEl) {
+    objectDetectionStatusEl.textContent = "載入物件模型中…";
+  }
+
+  try {
+    const vision = await FilesetResolver.forVisionTasks(WASM_URL);
+
+    objectDetector = await ObjectDetector.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: OBJECT_MODEL_URL
+      },
+      runningMode: "VIDEO",
+      scoreThreshold: 0.35,
+      maxResults: 8
+    });
+
+    if (objectDetectionStatusEl) {
+      objectDetectionStatusEl.textContent = "物件模型已就緒";
+    }
+  } catch (err) {
+    console.error("Object detector init failed", err);
+    if (objectDetectionStatusEl) {
+      objectDetectionStatusEl.textContent = "物件模型載入失敗";
+    }
+  } finally {
+    objectDetectorLoading = false;
+  }
+}
+
+function normalizeCategoryName(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
+function detectionCenter(det) {
+  const box = det?.boundingBox;
+  if (!box) return null;
+  return {
+    x: box.originX + box.width / 2,
+    y: box.originY + box.height / 2
+  };
+}
+
+function wristPixels(lm, hand) {
+  const idx = hand === "left" ? 15 : 16;
+  if (!visible(lm, idx)) return null;
+  return {
+    x: lm[idx].x * canvas.width,
+    y: lm[idx].y * canvas.height
+  };
+}
+
+function categoryOfDetection(det) {
+  const cat = det?.categories?.[0];
+  if (!cat) return null;
+  return {
+    name: normalizeCategoryName(cat.categoryName || cat.displayName),
+    score: Number(cat.score || 0)
+  };
+}
+
+function findHeldObjectNearHands(lm, b, detections) {
+  if (!lm || !b || !detections?.length) return null;
+
+  const wrists = [];
+  const lw = wristPixels(lm, "left");
+  const rw = wristPixels(lm, "right");
+  if (lw) wrists.push({ hand: "left", ...lw });
+  if (rw) wrists.push({ hand: "right", ...rw });
+  if (!wrists.length) return null;
+
+  // Allow some distance because racket bounding boxes are centered away from the grip.
+  const maxDistance = Math.max(55, b.h * 0.42);
+
+  let best = null;
+
+  for (const det of detections) {
+    const cat = categoryOfDetection(det);
+    if (!cat || !EXTENDABLE_OBJECT_LABELS.has(cat.name)) continue;
+
+    const center = detectionCenter(det);
+    if (!center) continue;
+
+    for (const wrist of wrists) {
+      const d = Math.hypot(center.x - wrist.x, center.y - wrist.y);
+
+      if (d <= maxDistance) {
+        const score = cat.score * 2 - d / maxDistance;
+        if (!best || score > best.rank) {
+          best = {
+            label: cat.name,
+            confidence: cat.score,
+            hand: wrist.hand,
+            distance: d,
+            detection: det,
+            rank: score
+          };
+        }
+      }
+    }
+  }
+
+  return best;
+}
+
+function updateHoldState(candidate) {
+  const sameAsPrevious =
+    candidate &&
+    currentHoldCandidate &&
+    candidate.label === currentHoldCandidate.label &&
+    candidate.hand === currentHoldCandidate.hand;
+
+  if (candidate) {
+    holdMissFrames = 0;
+
+    if (sameAsPrevious) {
+      holdConfirmFrames += 1;
+    } else {
+      currentHoldCandidate = candidate;
+      holdConfirmFrames = 1;
+    }
+
+    if (holdConfirmFrames >= HOLD_CONFIRM_CYCLES) {
+      confirmedHeldObject = candidate;
+    }
+  } else {
+    holdConfirmFrames = 0;
+    currentHoldCandidate = null;
+
+    if (confirmedHeldObject) {
+      holdMissFrames += 1;
+      if (holdMissFrames >= HOLD_RELEASE_CYCLES) {
+        confirmedHeldObject = null;
+        holdMissFrames = 0;
+      }
+    }
+  }
+
+  if (objectDetectionStatusEl) {
+    if (confirmedHeldObject) {
+      const pct = Math.round(confirmedHeldObject.confidence * 100);
+      objectDetectionStatusEl.textContent =
+        `已確認：${confirmedHeldObject.label}・${confirmedHeldObject.hand === "left" ? "左手" : "右手"}・${pct}%`;
+    } else if (candidate) {
+      objectDetectionStatusEl.textContent =
+        `確認中：${candidate.label}`;
+    } else {
+      objectDetectionStatusEl.textContent = "未偵測持物";
+    }
+  }
+}
+
+async function detectObjectsIfNeeded(nowMs, lm, b) {
+  if (extensionModeEl?.value !== "auto") return;
+  if (!objectDetector) return;
+  if (nowMs - lastObjectDetectionAt < OBJECT_INFERENCE_INTERVAL_MS) return;
+
+  lastObjectDetectionAt = nowMs;
+
+  try {
+    const result = objectDetector.detectForVideo(video, performance.now());
+    latestObjects = result?.detections || [];
+    const candidate = findHeldObjectNearHands(lm, b, latestObjects);
+    updateHoldState(candidate);
+  } catch (err) {
+    console.warn("Object detection failed", err);
+  }
+}
+
+function extensionShouldBeActive() {
+  const mode = extensionModeEl?.value || "auto";
+  if (mode === "off") return false;
+  if (mode === "manual") return true;
+  return !!confirmedHeldObject;
+}
+
+function resolvedExtensionHand(lm, b) {
+  const mode = extensionModeEl?.value || "auto";
+
+  if (mode === "auto" && confirmedHeldObject?.hand) {
+    return confirmedHeldObject.hand;
+  }
+
+  return chooseToolHand(lm, b);
+}
+
+function resolvedToolType() {
+  const mode = extensionModeEl?.value || "auto";
+
+  if (mode === "auto" && confirmedHeldObject) {
+    if (confirmedHeldObject.label === "tennis racket") return "racket";
+    if (confirmedHeldObject.label === "baseball bat") return "tool";
+    return "tool";
+  }
+
+  return toolTypeEl?.value || "racket";
 }
 
 async function initPoseModel() {
@@ -289,6 +815,11 @@ async function startAnalysis() {
 
   try {
     await initPoseModel();
+
+    if (extensionModeEl?.value === "auto") {
+      await initObjectDetector();
+    }
+
     await openCamera({ facing: facingMode });
 
     running = true;
@@ -315,6 +846,17 @@ function stopAnalysis() {
   stopTracks();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   resetMetrics();
+
+  latestObjects = [];
+  currentHoldCandidate = null;
+  confirmedHeldObject = null;
+  holdConfirmFrames = 0;
+  holdMissFrames = 0;
+  if (objectDetectionStatusEl) {
+    objectDetectionStatusEl.textContent =
+      extensionModeEl?.value === "auto" ? "未偵測持物" :
+      extensionModeEl?.value === "manual" ? "手動模式" : "自動偵測已關閉";
+  }
 
   placeholder.hidden = false;
   placeholder.style.display = "";
@@ -376,6 +918,11 @@ function drawResults(result) {
 
   const drawingUtils = new DrawingUtils(ctx);
 
+  // Draw space classification first, then the pose skeleton on top.
+  if (result.landmarks[0]) {
+    drawSpaceZones(result.landmarks[0]);
+  }
+
   for (const lm of result.landmarks) {
     drawingUtils.drawConnectors(
       lm,
@@ -409,12 +956,83 @@ function predict(now) {
 
   try {
     const result = poseLandmarker.detectForVideo(video, performance.now());
+
+    if (result?.landmarks?.[0]) {
+      const b = bodyBounds(result.landmarks[0]);
+      if (b) {
+        detectObjectsIfNeeded(now, result.landmarks[0], b);
+      }
+    }
+
     drawResults(result);
   } catch (err) {
     console.error("Inference error", err);
     setStatus("分析暫停", friendlyError(err));
   }
 }
+
+
+if (ppsScaleEl && ppsScaleValueEl) {
+  const updatePpsScaleLabel = () => {
+    ppsScaleValueEl.textContent = `${Number(ppsScaleEl.value).toFixed(2)} × 身高`;
+  };
+  ppsScaleEl.addEventListener("input", updatePpsScaleLabel);
+  updatePpsScaleLabel();
+}
+
+
+
+function updateExtensionMode() {
+  const mode = extensionModeEl?.value || "auto";
+
+  confirmedHeldObject = null;
+  currentHoldCandidate = null;
+  holdConfirmFrames = 0;
+  holdMissFrames = 0;
+
+  if (mode === "off") {
+    if (extensionStatusEl) extensionStatusEl.textContent = "關閉";
+    if (objectDetectionStatusEl) objectDetectionStatusEl.textContent = "自動偵測已關閉";
+  } else if (mode === "manual") {
+    if (extensionStatusEl) extensionStatusEl.textContent = "手動開啟";
+    if (objectDetectionStatusEl) objectDetectionStatusEl.textContent = "手動模式";
+  } else {
+    if (extensionStatusEl) extensionStatusEl.textContent = "等待持物";
+    if (objectDetectionStatusEl) objectDetectionStatusEl.textContent =
+      objectDetector ? "未偵測持物" : "等待載入物件模型";
+
+    if (running && !objectDetector) {
+      initObjectDetector();
+    }
+  }
+}
+
+function applyToolPreset() {
+  const preset = TOOL_PRESETS[toolTypeEl?.value || "racket"] || TOOL_PRESETS.custom;
+  if (toolTypeEl?.value !== "custom" && extensionScaleEl) {
+    extensionScaleEl.value = String(preset.scale);
+  }
+  updateExtensionScaleLabel();
+}
+
+function updateExtensionScaleLabel() {
+  if (extensionScaleEl && extensionScaleValueEl) {
+    extensionScaleValueEl.textContent =
+      `${Number(extensionScaleEl.value).toFixed(2)} × 身高`;
+  }
+}
+
+extensionModeEl?.addEventListener("change", updateExtensionMode);
+toolTypeEl?.addEventListener("change", applyToolPreset);
+toolHandEl?.addEventListener("change", () => {
+  if (extensionStatusEl && extensionModeEl?.value === "manual") {
+    extensionStatusEl.textContent = "手動更新中";
+  }
+});
+extensionScaleEl?.addEventListener("input", updateExtensionScaleLabel);
+
+updateExtensionMode();
+applyToolPreset();
 
 startBtn.addEventListener("click", startAnalysis);
 stopBtn.addEventListener("click", stopAnalysis);
@@ -433,4 +1051,4 @@ window.addEventListener("pagehide", () => {
   if (running || stream) stopTracks();
 });
 
-setStatus("等待啟動", "支援 Android 手機／平板、iPhone／iPad 與桌面瀏覽器。");
+setStatus("等待啟動", "V5：空手不展延；偵測到持物且確認後才啟用展延區。");

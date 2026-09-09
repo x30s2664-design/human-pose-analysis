@@ -7,8 +7,8 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>人體姿態即時分析</title>
-  <link rel="stylesheet" href="style.css?v=2.1" />
+  <title>人體姿態與空間分析</title>
+  <link rel="stylesheet" href="style.css?v=5" />
 </head>
 <body>
   <main>
@@ -45,13 +45,75 @@
       </div>
     </section>
 
-    <section class="panel">
+    
+    <section class="space-controls">
+      <div class="legend">
+        <span><i class="dot body-dot"></i>本體空間</span>
+        <span><i class="dot peri-dot"></i>近體空間</span>
+        <span><i class="dot extension-dot"></i>展延區域</span>
+        <span><i class="dot extra-dot"></i>遠體空間</span>
+      </div>
+
+      <label class="range-row">
+        近體範圍
+        <input id="ppsScale" type="range" min="0.25" max="0.70" step="0.01" value="0.42">
+        <span id="ppsScaleValue">0.42 × 身高</span>
+      </label>
+
+      <div class="extension-controls">
+        <label class="select-row">
+          <span>展延判斷</span>
+          <select id="extensionMode">
+            <option value="auto" selected>自動判斷</option>
+            <option value="manual">手動開啟</option>
+            <option value="off">強制關閉</option>
+          </select>
+        </label>
+
+        <label class="select-row">
+          <span>持物種類</span>
+          <select id="toolType">
+            <option value="racket">球拍</option>
+            <option value="pen">筆</option>
+            <option value="tool">一般工具</option>
+            <option value="custom">自訂</option>
+          </select>
+        </label>
+
+        <div class="detection-row">
+          <span>持物偵測</span>
+          <strong id="objectDetectionStatus">尚未啟動</strong>
+        </div>
+
+        <label class="select-row">
+          <span>持物手</span>
+          <select id="toolHand">
+            <option value="auto">自動</option>
+            <option value="right">右手</option>
+            <option value="left">左手</option>
+          </select>
+        </label>
+
+        <label class="range-row">
+          展延長度
+          <input id="extensionScale" type="range" min="0.08" max="0.75" step="0.01" value="0.42">
+          <span id="extensionScaleValue">0.42 × 身高</span>
+        </label>
+
+        <small class="extension-note">
+          自動模式：連續偵測到持物且位置接近手腕才啟用展延；空手時自動關閉。
+        </small>
+      </div>
+    </section>
+
+<section class="panel">
       <div><strong>頭部方向</strong><span id="head">—</span></div>
       <div><strong>肩膀傾斜</strong><span id="shoulder">—</span></div>
       <div><strong>髖部傾斜</strong><span id="hip">—</span></div>
       <div><strong>左膝角</strong><span id="leftKnee">—</span></div>
       <div><strong>右膝角</strong><span id="rightKnee">—</span></div>
       <div><strong>支撐腳</strong><span id="support">—</span></div>
+      <div><strong>展延狀態</strong><span id="extensionStatus">關閉</span></div>
     </section>
 
     <p class="note">
@@ -59,6 +121,6 @@
     </p>
   </main>
 
-  <script type="module" src="app.js?v=2.1"></script>
+  <script type="module" src="app.js?v=5"></script>
 </body>
 </html>
