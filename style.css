@@ -501,3 +501,15 @@ body.analysis-fullscreen .analysis-hud {
   height: 100%;
   object-fit: contain;
 }
+
+/* V17: engine and diagnostics */
+.engine-controls {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px 0 4px;
+  border-top: 1px solid #3a3a3a;
+}
+#maskStatus {
+  font-variant-numeric: tabular-nums;
+}

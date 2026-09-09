@@ -57,7 +57,11 @@ const analysisHud = document.getElementById("analysisHud");
 const hudObject = document.getElementById("hudObject");
 const hudExtension = document.getElementById("hudExtension");
 const hudPps = document.getElementById("hudPps");
+const hudMask = document.getElementById("hudMask");
 const stageEl = document.querySelector(".stage");
+const maskStatusEl = document.getElementById("maskStatus");
+const qualityModeEl = document.getElementById("qualityMode");
+const poseEngineEl = document.getElementById("poseEngine");
 
 
 
@@ -93,9 +97,9 @@ let latestPoseLandmarks = null;
 
 
 // Mobile/tablet: limiting inference rate reduces heat and browser stalls.
-const MIN_INFERENCE_INTERVAL_MS = 85;
-const OBJECT_INFERENCE_INTERVAL_MS = 250;
-const HAND_INFERENCE_INTERVAL_MS = 100;
+let MIN_INFERENCE_INTERVAL_MS = 85;
+let OBJECT_INFERENCE_INTERVAL_MS = 250;
+let HAND_INFERENCE_INTERVAL_MS = 100;
 
 // Contact-based holding threshold. Temporal hysteresis below still applies.
 const HOLDING_SCORE_THRESHOLD = 0.50;
@@ -134,6 +138,26 @@ const NON_HOLDABLE_LABELS = new Set([
 
 const KNOWN_HOLD_THRESHOLD = 0.46;
 const UNKNOWN_HOLD_THRESHOLD = 0.56;
+const OBJECT_VISIBLE_SCORE_THRESHOLD = 0.40;
+const LOW_SCORE_CONTACT_GATE = 0.62;
+
+function applyQualityMode() {
+  const mode = qualityModeEl?.value || "auto";
+  if (mode === "eco") {
+    MIN_INFERENCE_INTERVAL_MS = 120;
+    HAND_INFERENCE_INTERVAL_MS = 150;
+    OBJECT_INFERENCE_INTERVAL_MS = 420;
+  } else if (mode === "accurate") {
+    MIN_INFERENCE_INTERVAL_MS = 70;
+    HAND_INFERENCE_INTERVAL_MS = 85;
+    OBJECT_INFERENCE_INTERVAL_MS = 200;
+  } else {
+    const lowPower = (navigator.hardwareConcurrency || 4) <= 4;
+    MIN_INFERENCE_INTERVAL_MS = lowPower ? 110 : 85;
+    HAND_INFERENCE_INTERVAL_MS = lowPower ? 140 : 100;
+    OBJECT_INFERENCE_INTERVAL_MS = lowPower ? 360 : 250;
+  }
+}
 
 
 
@@ -209,6 +233,7 @@ function updateAnalysisHud() {
   if (hudPps && ppsScaleEl) {
     hudPps.textContent = `PPS：${Number(ppsScaleEl.value).toFixed(2)} × 身寬`;
   }
+  if (hudMask && maskStatusEl) hudMask.textContent = `MASK：${maskStatusEl.textContent}`;
 
   if (hudObject) {
     if (confirmedHeldObject?.gripProxy) {
@@ -1002,17 +1027,24 @@ function drawMannequinBody(lm, b) {
 
 function segmentationBodyMask(result) {
   const mpMask = result?.segmentationMasks?.[0];
-  if (!mpMask || typeof mpMask.getAsFloat32Array !== "function") return null;
+  if (!mpMask || typeof mpMask.getAsFloat32Array !== "function") {
+    if (maskStatusEl) maskStatusEl.textContent = "POSE FALLBACK";
+    return null;
+  }
 
   let values;
   try {
     values = mpMask.getAsFloat32Array();
   } catch (err) {
     console.warn("Segmentation mask unavailable", err);
+    if (maskStatusEl) maskStatusEl.textContent = "POSE FALLBACK";
     return null;
   }
 
-  if (!values?.length) return null;
+  if (!values?.length) {
+    if (maskStatusEl) maskStatusEl.textContent = "POSE FALLBACK";
+    return null;
+  }
 
   const sourceW = Number(mpMask.width || canvas.width);
   const sourceH = Number(mpMask.height || canvas.height);
@@ -1047,6 +1079,7 @@ function segmentationBodyMask(result) {
   const fctx = full.getContext("2d");
   fctx.imageSmoothingEnabled = true;
   fctx.drawImage(small, 0, 0, full.width, full.height);
+  if (maskStatusEl) maskStatusEl.textContent = "SEGMENTATION";
   return full;
 }
 
@@ -2602,6 +2635,9 @@ canvas.addEventListener("pointercancel", () => {
   if (manualBoxDrawing) endManualBoxMode();
 });
 
+qualityModeEl?.addEventListener("change", applyQualityMode);
+applyQualityMode();
+
 fullscreenBtn?.addEventListener("click", toggleImmersiveAnalysis);
 exitFullscreenBtn?.addEventListener("click", exitImmersiveAnalysis);
 stageFlipBtn?.addEventListener("click", switchCameraByFacing);
@@ -2631,4 +2667,4 @@ window.addEventListener("pagehide", () => {
   if (running || stream) stopTracks();
 });
 
-setStatus("等待啟動", "V12：自動偵測 + 手動框選 fallback；支援未收錄於 COCO 的桌球拍等工具。");
+setStatus("等待啟動", "V17：MediaPipe 33點 + Segmentation + Hand/Object contact + 全螢幕。");

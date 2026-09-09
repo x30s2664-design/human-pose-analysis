@@ -435,3 +435,19 @@ open-vocabulary / segmentation 模型。
 
 注意：手機瀏覽器是否能完全隱藏網址列由瀏覽器政策決定；
 即使 Fullscreen API 被拒絕，CSS 沉浸模式仍會把分析區填滿目前可視畫面。
+
+
+## V17 整合策略
+
+GitHub Pages 正式版繼續以 MediaPipe Tasks Vision 為核心：
+- Pose Landmarker：33 點、世界座標、人體 segmentation。
+- Hand Landmarker：21 點手部 landmarks，用於 contact / grip。
+- EfficientDet Lite0：物件 bbox；一般顯示採較高門檻，低信心框只有在強手部接觸時才可進入持物候選。
+- PPS：優先由 segmentation 人體遮罩向外膨脹；無遮罩時才使用 Pose 幾何 fallback。
+- HUD / 設定面板直接顯示 `SEGMENTATION` 或 `POSE FALLBACK`，方便實機驗證。
+- 效能模式：自動 / 省電 / 高精度，調整 Pose、Hand、Object 的推論節奏。
+- MoveNet：介面保留備援插槽，但 V17 不同時載入第二套姿態模型，避免手機端記憶體與熱負載增加。
+- OpenPose / MMPose / Apple Vision 不直接塞入靜態 GitHub Pages；適合作為離線研究比較或原生 App 路線。
+
+重要限制：EfficientDet COCO 沒有桌球拍類別。V17 可用手部接觸與握持姿態降低漏判，
+但要真正自動辨識「桌球拍」類別，仍需要自訂 detector / browser-compatible model。

@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>人體姿態與空間分析</title>
-  <link rel="stylesheet" href="style.css?v=16" />
+  <link rel="stylesheet" href="style.css?v=17" />
 </head>
 <body>
   <main>
@@ -45,6 +45,7 @@
         <span id="hudObject">持物：—</span>
         <span id="hudExtension">展延：—</span>
         <span id="hudPps">PPS：0.18 × 身寬</span>
+        <span id="hudMask">MASK：—</span>
       </div>
       <div class="stage-actions">
         <button id="stageFlipBtn" type="button" hidden>切換鏡頭</button>
@@ -70,6 +71,28 @@
         <input id="ppsScale" type="range" min="0.08" max="0.45" step="0.01" value="0.18">
         <span id="ppsScaleValue">0.18 × 身寬</span>
       </label>
+
+      <div class="engine-controls">
+        <label class="select-row">
+          <span>姿態引擎</span>
+          <select id="poseEngine">
+            <option value="mediapipe" selected>MediaPipe Pose 33 點</option>
+            <option value="movenet" disabled>MoveNet 17 點（預留備援）</option>
+          </select>
+        </label>
+        <label class="select-row">
+          <span>效能模式</span>
+          <select id="qualityMode">
+            <option value="auto" selected>自動</option>
+            <option value="eco">省電</option>
+            <option value="accurate">高精度</option>
+          </select>
+        </label>
+        <div class="detection-row">
+          <span>人體遮罩</span>
+          <strong id="maskStatus">等待人體</strong>
+        </div>
+      </div>
 
       <div class="extension-controls">
         <label class="select-row">
@@ -125,7 +148,7 @@
 
         <small class="extension-note">
           自動模式：物件框＋手部接觸優先；空手時自動關閉。若物件模型完全漏掉特殊工具，只有在你明確選了工具類型時，才允許「握持姿態推定」fallback。
-          <br>框線：綠色＝已確認持物、黃色＝持物候選、藍色＝已偵測物件。自動模式的展延方向直接依物件框，不再依前臂方向猜測。若模型不支援桌球拍等類別，可按「手動框選持物」拖曳框出物件；V16：保留 V15 segmentation / 持物判斷，新增手機與平板沉浸式全螢幕分析。持物優先使用物件框＋手部接觸；若桌球拍完全沒有物件框，且你明確選「桌球拍」等工具類型，系統可用連續握持姿態作為「推定持物」fallback。推定模式會明確標示，避免把推定當成物件辨識。
+          <br>框線：綠色＝已確認持物、黃色＝持物候選、藍色＝已偵測物件。自動模式的展延方向直接依物件框，不再依前臂方向猜測。若模型不支援桌球拍等類別，可按「手動框選持物」拖曳框出物件；V17：MediaPipe 33 點 + 人體遮罩 + Hand contact + 物件雙門檻 + 全螢幕；MoveNet 保留為未來備援插槽。持物優先使用物件框＋手部接觸；若桌球拍完全沒有物件框，且你明確選「桌球拍」等工具類型，系統可用連續握持姿態作為「推定持物」fallback。推定模式會明確標示，避免把推定當成物件辨識。
         </small>
       </div>
     </section>
@@ -145,6 +168,6 @@
     </p>
   </main>
 
-  <script type="module" src="app.js?v=16"></script>
+  <script type="module" src="app.js?v=17"></script>
 </body>
 </html>
