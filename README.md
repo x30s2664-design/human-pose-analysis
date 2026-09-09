@@ -348,3 +348,35 @@ EfficientDet Lite0 / COCO 沒有 table-tennis paddle 類別，因此無法靠降
 confidence 自動得到桌球拍名稱。V13 對這類物件保留手動 ROI fallback。
 若需要「未知物件也全自動找框」，下一階段需要加入 open-vocabulary detector
 或自行訓練桌球拍/工具 detector。
+
+
+## V14：遠體 + 持拍判斷完整修正
+
+### 遠體空間
+V13 的遠體只是整個畫面 2.5% alpha 的藍色背景，視覺上幾乎等於沒有，
+而且不是「PPS 外部」的真正幾何分類。
+
+V14 改為：
+- 本體：木偶 body envelope。
+- 近體 PPS：expanded body mask - body mask，成為真正的黃色環帶。
+- 遠體：canvas - expanded PPS mask，成為 PPS 外部的藍色區域。
+- 三區互斥顯示，不再讓黃色 PPS 蓋住本體。
+
+### 持拍判斷
+V13 最大問題是先用 EXTENDABLE_OBJECT_LABELS 白名單過濾。
+桌球拍不在 COCO；即使 EfficientDet 把它誤判為 frisbee 或其他類別，
+也會在 contact 判斷前直接被丟掉。
+
+V14 改為：
+- 除 person 外，所有合理大小的 detector bbox 都可進入 hand-object contact 判斷。
+- 已知工具：contact threshold 0.46。
+- 未知/誤分類物件：較嚴格 threshold 0.56。
+- 未知物件若通過手指/掌心接觸判斷，顯示「未知持物 / detector label」。
+- 未知物件只在成為候選/確認持物時才畫框，避免畫面塞滿一般物件框。
+- ObjectDetector threshold 0.18、maxResults 12，增加桌球拍被其他 COCO 類別捕捉的機會。
+- 若未知物件確認持有，展延直接用其 bbox 幾何；工具種類採 UI 選擇，
+  因此桌球拍請在工具類型選「桌球拍」。
+
+### 仍保留 fallback
+若 EfficientDet 對桌球拍完全沒有任何 bbox，仍可使用「手動框選持物」。
+手動框選不會直接算持物，仍需 Hand Landmarker 接觸分數通過。

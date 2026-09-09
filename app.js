@@ -113,6 +113,18 @@ const EXTENDABLE_OBJECT_LABELS = new Set([
   "toothbrush"
 ]);
 
+// V14: do not equate "not in our tool whitelist" with "not held".
+// COCO may classify a table-tennis paddle as another category (often a round
+// sports object). Strong hand contact is therefore allowed to confirm a
+// generic/unknown held object.
+const NON_HOLDABLE_LABELS = new Set([
+  "person"
+]);
+
+const KNOWN_HOLD_THRESHOLD = 0.46;
+const UNKNOWN_HOLD_THRESHOLD = 0.56;
+
+
 function setStatus(text, detail = "") {
   statusEl.textContent = text;
   detailEl.textContent = detail;
@@ -845,22 +857,33 @@ function drawSpaceZones(lm) {
 
   const refW = bodyReferenceWidth(lm, b);
   const scale = parseFloat(ppsScaleEl?.value || "0.18");
-
-  // Use shoulder/body WIDTH. 0.20 gives a compact envelope around the body.
   const ppsMargin = Math.max(10, refW * scale);
-
-  // Far space is only a subtle background cue.
-  ctx.save();
-  ctx.fillStyle = "rgba(65, 120, 255, 0.025)";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.restore();
 
   const ppsMask = buildBodyMask(lm, b, ppsMargin);
   const bodyMask = buildBodyMask(lm, b, 0);
 
-  paintMaskColor(ppsMask, "rgba(255, 214, 70, 0.16)");
-  // PPS comes from the reconstructed body envelope.
-  // The visible body itself is rendered as articulated mannequin blocks.
+  // FAR SPACE = everything outside the expanded PPS envelope.
+  // This makes the classification geometrically explicit instead of applying
+  // an almost invisible blue tint to the whole frame.
+  const farLayer = newMaskCanvas();
+  const fctx = farLayer.getContext("2d");
+  fctx.fillStyle = "rgba(70, 125, 235, 0.105)";
+  fctx.fillRect(0, 0, farLayer.width, farLayer.height);
+  fctx.globalCompositeOperation = "destination-out";
+  fctx.drawImage(ppsMask, 0, 0);
+  fctx.globalCompositeOperation = "source-over";
+  ctx.drawImage(farLayer, 0, 0);
+
+  // PPS RING = expanded body envelope minus the body itself.
+  const ppsRing = newMaskCanvas();
+  const prctx = ppsRing.getContext("2d");
+  prctx.drawImage(ppsMask, 0, 0);
+  prctx.globalCompositeOperation = "destination-out";
+  prctx.drawImage(bodyMask, 0, 0);
+  prctx.globalCompositeOperation = "source-over";
+  paintMaskColor(ppsRing, "rgba(255, 214, 70, 0.22)");
+
+  // Body is rendered separately as articulated mannequin blocks.
   drawMannequinBody(lm, b);
 
   const fontSize = Math.max(13, Math.round(canvas.width / 70));
@@ -868,15 +891,15 @@ function drawSpaceZones(lm) {
   ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
   ctx.textBaseline = "top";
 
-  ctx.fillStyle = "rgba(255, 110, 110, 0.96)";
+  ctx.fillStyle = "rgba(255, 110, 110, 0.98)";
   ctx.fillText("本體", clamp(b.maxX - 48, 8, canvas.width - 60),
                clamp(b.minY + b.h * 0.52, 8, canvas.height - 26));
 
-  ctx.fillStyle = "rgba(255, 230, 110, 0.96)";
+  ctx.fillStyle = "rgba(255, 230, 110, 0.98)";
   ctx.fillText("近體 PPS", clamp(b.maxX - 85, 8, canvas.width - 105),
                clamp(b.minY - ppsMargin * 0.45, 8, canvas.height - 26));
 
-  ctx.fillStyle = "rgba(120, 175, 255, 0.92)";
+  ctx.fillStyle = "rgba(155, 195, 255, 0.98)";
   ctx.fillText("遠體", 12, canvas.height - fontSize - 12);
   ctx.restore();
 
@@ -1072,10 +1095,18 @@ function handObjectContactFeatures(handPts, box, bodyWidth) {
 
 function holdingCandidateForDetection(lm, b, det) {
   const cat = categoryOfDetection(det);
-  if (!cat || !EXTENDABLE_OBJECT_LABELS.has(cat.name)) return null;
+  if (!cat) return null;
 
   const box = det?.boundingBox;
   if (!box) return null;
+
+  if (NON_HOLDABLE_LABELS.has(cat.name)) return null;
+
+  // Reject extremely large scene/background boxes. Held objects can be large
+  // near the camera, but should not occupy nearly the whole frame.
+  const boxArea = Math.max(0, box.width * box.height);
+  const frameArea = Math.max(1, canvas.width * canvas.height);
+  if (boxArea / frameArea > 0.58) return null;
 
   const bodyWidth =
     visible(lm, 11) && visible(lm, 12)
@@ -1086,6 +1117,8 @@ function holdingCandidateForDetection(lm, b, det) {
       : Math.max(60, b.w * 0.4);
 
   const mappedHands = assignDetectedHandsToPose(lm);
+  const isKnownTool = EXTENDABLE_OBJECT_LABELS.has(cat.name);
+  const threshold = isKnownTool ? KNOWN_HOLD_THRESHOLD : UNKNOWN_HOLD_THRESHOLD;
   let best = null;
 
   for (const side of ["left", "right"]) {
@@ -1093,14 +1126,19 @@ function holdingCandidateForDetection(lm, b, det) {
 
     if (handPts) {
       const f = handObjectContactFeatures(handPts, box, bodyWidth);
-      if (!f || f.score < HOLDING_SCORE_THRESHOLD) continue;
+      if (!f || f.score < threshold) continue;
 
-      // Detector confidence and contact score both matter.
-      const rank = f.score * 3 + cat.score;
+      // Unknown labels require stronger physical evidence, but are still
+      // accepted when the hand is actually wrapping/touching the object.
+      const rank =
+        f.score * 3 +
+        cat.score +
+        (isKnownTool ? 0.30 : 0);
 
       if (!best || rank > best.rank) {
         best = {
           label: cat.name,
+          displayLabel: isKnownTool ? cat.name : `unknown (${cat.name})`,
           confidence: cat.score,
           hand: side,
           distance: f.minTipDistance,
@@ -1108,24 +1146,28 @@ function holdingCandidateForDetection(lm, b, det) {
           fingertipHits: f.fingertipHits,
           detection: det,
           rank,
-          contactBased: true
+          contactBased: true,
+          genericObject: !isKnownTool
         };
       }
       continue;
     }
 
-    // Fallback only when Hand Landmarker cannot see the hand.
+    // Fallback only if Hand Landmarker temporarily loses the hand.
+    // For unknown labels this fallback is intentionally stricter.
     const wrist = wristPixels(lm, side);
     const relation = wristTouchesObject(wrist, det, bodyWidth);
     if (!relation?.touches) continue;
 
     const fallbackScore = Math.max(0, 0.45 - relation.distance / Math.max(1, bodyWidth));
-    if (fallbackScore < 0.25) continue;
+    const minFallback = isKnownTool ? 0.25 : 0.34;
+    if (fallbackScore < minFallback) continue;
 
-    const rank = cat.score + fallbackScore;
+    const rank = cat.score + fallbackScore + (isKnownTool ? 0.2 : 0);
     if (!best || rank > best.rank) {
       best = {
         label: cat.name,
+        displayLabel: isKnownTool ? cat.name : `unknown (${cat.name})`,
         confidence: cat.score,
         hand: side,
         distance: relation.distance,
@@ -1133,14 +1175,14 @@ function holdingCandidateForDetection(lm, b, det) {
         fingertipHits: 0,
         detection: det,
         rank,
-        contactBased: false
+        contactBased: false,
+        genericObject: !isKnownTool
       };
     }
   }
 
   return best;
 }
-
 async function initObjectDetector() {
   if (objectDetector || objectDetectorLoading) return;
 
@@ -1157,8 +1199,8 @@ async function initObjectDetector() {
         modelAssetPath: OBJECT_MODEL_URL
       },
       runningMode: "VIDEO",
-      scoreThreshold: 0.25,
-      maxResults: 8
+      scoreThreshold: 0.18,
+      maxResults: 12
     });
 
     if (objectDetectionStatusEl) {
@@ -1292,11 +1334,14 @@ function updateHoldState(candidate) {
     if (confirmedHeldObject) {
       const pct = Math.round(confirmedHeldObject.confidence * 100);
       const contactPct = Math.round((confirmedHeldObject.contactScore || 0) * 100);
+      const shownLabel = confirmedHeldObject.genericObject
+        ? `未知持物 / ${confirmedHeldObject.label}`
+        : confirmedHeldObject.label;
       objectDetectionStatusEl.textContent =
-        `已確認：${confirmedHeldObject.label}・${confirmedHeldObject.hand === "left" ? "左手" : "右手"}・物件 ${pct}%・接觸 ${contactPct}%`;
+        `已確認：${shownLabel}・${confirmedHeldObject.hand === "left" ? "左手" : "右手"}・物件 ${pct}%・接觸 ${contactPct}%`;
     } else if (candidate) {
       objectDetectionStatusEl.textContent =
-        `確認中：${candidate.label}`;
+        `確認中：${candidate.genericObject ? `未知物件 / ${candidate.label}` : candidate.label}`;
     } else {
       objectDetectionStatusEl.textContent = latestObjects?.length ? "已偵測物件，等待手腕關聯" : "未偵測持物";
     }
@@ -1374,6 +1419,13 @@ function resolvedToolType() {
     if (confirmedHeldObject.label === "tennis racket") return "racket";
     if (confirmedHeldObject.label === "cell phone") return "phone";
     if (confirmedHeldObject.label === "baseball bat") return "tool";
+
+    // If the detector found an object but classified it as an unrelated COCO
+    // category, keep the bbox/contact evidence and let the user specify its
+    // physical tool type (e.g. 桌球拍).
+    if (confirmedHeldObject.genericObject) {
+      return toolTypeEl?.value || "unknown";
+    }
     return "tool";
   }
 
@@ -1852,7 +1904,6 @@ function drawHeldObjectBoxes(lm) {
 
     if (!cat || !box) continue;
     const isManual = !!det.__manual;
-    if (!isManual && !EXTENDABLE_OBJECT_LABELS.has(cat.name)) continue;
 
     const isConfirmed =
       confirmedHeldObject?.detection &&
@@ -1862,6 +1913,13 @@ function drawHeldObjectBoxes(lm) {
       !isConfirmed &&
       currentHoldCandidate?.detection &&
       sameDetection(det, currentHoldCandidate.detection);
+
+    const isKnownTool = EXTENDABLE_OBJECT_LABELS.has(cat.name);
+
+    // Keep normal screen uncluttered: known tools are always shown; unknown
+    // categories are shown only when contact logic says they are a held
+    // candidate/confirmed object.
+    if (!isManual && !isKnownTool && !isCandidate && !isConfirmed) continue;
 
     let stroke = "rgba(80, 205, 255, 0.95)";
     let fill = "rgba(80, 205, 255, 0.10)";
@@ -1907,7 +1965,7 @@ function drawHeldObjectBoxes(lm) {
     const pct = Math.round(cat.score * 100);
     const label = isManual
       ? `${prefix}：${toolTypeEl?.selectedOptions?.[0]?.textContent || "未知工具"}`
-      : `${prefix}：${cat.name} ${pct}%`;
+      : `${prefix}：${isKnownTool ? cat.name : `未知物件(${cat.name})`} ${pct}%`;
 
     const metrics = ctx.measureText(label);
     const padX = 7;
