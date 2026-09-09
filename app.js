@@ -70,7 +70,14 @@ function deg(v) {
 }
 
 function angleLine(a, b) {
-  return Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
+  let angle = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
+
+  // A shoulder/hip line has no meaningful 180-degree direction.
+  // Normalize to a readable tilt: -90° .. +90°.
+  while (angle > 90) angle -= 180;
+  while (angle < -90) angle += 180;
+
+  return angle;
 }
 
 function jointAngle(a, b, c) {
@@ -260,6 +267,7 @@ async function openCamera({ deviceId = "", facing = facingMode } = {}) {
   canvas.style.transform = mirror ? "scaleX(-1)" : "none";
 
   placeholder.hidden = true;
+  placeholder.style.display = "none";
   await listCameras();
 }
 
@@ -309,6 +317,7 @@ function stopAnalysis() {
   resetMetrics();
 
   placeholder.hidden = false;
+  placeholder.style.display = "";
   startBtn.disabled = false;
   stopBtn.disabled = true;
   flipBtn.disabled = true;

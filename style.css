@@ -196,3 +196,9 @@ canvas {
     max-width: none;
   }
 }
+
+
+/* V2.1: make sure the camera placeholder never covers the live video. */
+.placeholder[hidden] {
+  display: none !important;
+}
