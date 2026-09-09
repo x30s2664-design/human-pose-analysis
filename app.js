@@ -375,80 +375,167 @@ function drawExtensionZone(lm, b) {
   }
 }
 
+function skeletonSegments(lm) {
+  const segments = [];
+
+  for (const connection of PoseLandmarker.POSE_CONNECTIONS) {
+    const aIndex = connection.start;
+    const bIndex = connection.end;
+
+    if (!visible(lm, aIndex) || !visible(lm, bIndex)) continue;
+
+    segments.push({
+      ax: lm[aIndex].x * canvas.width,
+      ay: lm[aIndex].y * canvas.height,
+      bx: lm[bIndex].x * canvas.width,
+      by: lm[bIndex].y * canvas.height
+    });
+  }
+
+  return segments;
+}
+
+function drawSkeletonField(segments, width, fillStyle) {
+  if (!segments.length) return;
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = width;
+  ctx.strokeStyle = fillStyle;
+
+  ctx.beginPath();
+  for (const s of segments) {
+    ctx.moveTo(s.ax, s.ay);
+    ctx.lineTo(s.bx, s.by);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawSkeletonBoundary(segments, width, strokeStyle, dash = []) {
+  if (!segments.length) return;
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = width;
+  ctx.strokeStyle = strokeStyle;
+  ctx.setLineDash(dash);
+
+  ctx.beginPath();
+  for (const s of segments) {
+    ctx.moveTo(s.ax, s.ay);
+    ctx.lineTo(s.bx, s.by);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawSpaceZones(lm) {
   const b = bodyBounds(lm);
   if (!b) return;
 
+  const segments = skeletonSegments(lm);
+  if (!segments.length) return;
+
   const scale = parseFloat(ppsScaleEl?.value || "0.42");
 
-  // Trial mapping:
-  // "body space" = detected body envelope.
-  // "peripersonal space" = body-centered envelope expanded by a fraction of detected body height.
-  // Everything outside = extrapersonal space.
-  //
-  // The default 0.42 is a visualization heuristic, roughly relating
-  // ~72 cm peri-trunk PPS to ~170 cm adult body height.
-  const margin = b.h * scale;
+  /*
+   * V6 core rule:
+   * WHITE POSE LINES are the spatial reference.
+   *
+   * 1. Body space is a narrow morphological expansion around every
+   *    detected white skeleton segment.
+   * 2. PPS is a larger expansion around those SAME skeleton segments.
+   * 3. Everything not covered by those fields is extrapersonal space.
+   *
+   * Therefore the yellow PPS follows arms/legs/posture instead of being
+   * a fixed ellipse or rectangle around the person.
+   */
+  const bodyRadius = Math.max(10, b.h * 0.035);
+  const ppsRadius = Math.max(bodyRadius + 12, b.h * scale);
 
-  const outerX = clamp(b.minX - margin, 0, canvas.width);
-  const outerY = clamp(b.minY - margin, 0, canvas.height);
-  const outerW = clamp(b.maxX + margin, 0, canvas.width) - outerX;
-  const outerH = clamp(b.maxY + margin, 0, canvas.height) - outerY;
-
-  const bodyPad = Math.max(8, b.w * 0.06);
-  const bodyX = clamp(b.minX - bodyPad, 0, canvas.width);
-  const bodyY = clamp(b.minY - bodyPad, 0, canvas.height);
-  const bodyW = clamp(b.maxX + bodyPad, 0, canvas.width) - bodyX;
-  const bodyH = clamp(b.maxY + bodyPad, 0, canvas.height) - bodyY;
-
-  // FAR / extrapersonal: tint whole frame first.
   ctx.save();
-  ctx.fillStyle = "rgba(65, 120, 255, 0.08)";
+
+  // FAR / extrapersonal background.
+  ctx.fillStyle = "rgba(65, 120, 255, 0.075)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // PPS / near body: body-centered rounded ellipse.
-  ctx.beginPath();
-  ctx.ellipse(
-    outerX + outerW / 2,
-    outerY + outerH / 2,
-    Math.max(10, outerW / 2),
-    Math.max(10, outerH / 2),
-    0, 0, Math.PI * 2
+  // PPS: large yellow field grown outward from the white skeleton.
+  // Stroke width is diameter, hence radius * 2.
+  drawSkeletonField(
+    segments,
+    ppsRadius * 2,
+    "rgba(255, 210, 60, 0.13)"
   );
-  ctx.fillStyle = "rgba(255, 210, 60, 0.15)";
-  ctx.fill();
-  ctx.lineWidth = Math.max(2, canvas.width / 500);
-  ctx.strokeStyle = "rgba(255, 220, 80, 0.95)";
-  ctx.setLineDash([12, 9]);
-  ctx.stroke();
+  drawSkeletonBoundary(
+    segments,
+    ppsRadius * 2,
+    "rgba(255, 220, 80, 0.62)",
+    [12, 10]
+  );
 
-  // BODY: tighter body envelope.
-  ctx.setLineDash([]);
-  ctx.beginPath();
-  ctx.roundRect(bodyX, bodyY, bodyW, bodyH, Math.max(12, bodyW * 0.08));
-  ctx.fillStyle = "rgba(255, 70, 70, 0.10)";
-  ctx.fill();
-  ctx.lineWidth = Math.max(2, canvas.width / 450);
-  ctx.strokeStyle = "rgba(255, 90, 90, 0.95)";
-  ctx.stroke();
+  // BODY: tighter red field grown from the same white skeleton.
+  drawSkeletonField(
+    segments,
+    bodyRadius * 2,
+    "rgba(255, 70, 70, 0.16)"
+  );
+  drawSkeletonBoundary(
+    segments,
+    bodyRadius * 2,
+    "rgba(255, 90, 90, 0.78)"
+  );
 
-  // Labels
-  const fontSize = Math.max(16, Math.round(canvas.width / 55));
+  // Head gets a body-centered disc because facial connections alone
+  // would otherwise produce a very thin body field around the face.
+  if (visible(lm, 0)) {
+    const headX = lm[0].x * canvas.width;
+    const headY = lm[0].y * canvas.height;
+    const shoulderSpan =
+      visible(lm, 11) && visible(lm, 12)
+        ? Math.hypot(
+            (lm[11].x - lm[12].x) * canvas.width,
+            (lm[11].y - lm[12].y) * canvas.height
+          )
+        : b.w * 0.35;
+
+    const headBodyRadius = Math.max(bodyRadius * 1.7, shoulderSpan * 0.24);
+    const headPpsRadius = headBodyRadius + ppsRadius * 0.72;
+
+    ctx.beginPath();
+    ctx.arc(headX, headY, headPpsRadius, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 210, 60, 0.10)";
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(headX, headY, headBodyRadius, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 70, 70, 0.13)";
+    ctx.fill();
+  }
+
+  // Compact labels placed relative to detected body.
+  const fontSize = Math.max(14, Math.round(canvas.width / 62));
   ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
   ctx.textBaseline = "top";
 
-  ctx.fillStyle = "rgba(255, 100, 100, 0.98)";
-  ctx.fillText("本體", bodyX + 10, bodyY + 10);
+  ctx.fillStyle = "rgba(255, 105, 105, 0.98)";
+  ctx.fillText("本體（白線基準）", clamp(b.minX, 8, canvas.width - 180),
+               clamp(b.minY + b.h * 0.46, 8, canvas.height - 30));
 
   ctx.fillStyle = "rgba(255, 225, 100, 0.98)";
-  ctx.fillText("近體 PPS", outerX + 10, Math.max(8, outerY + 10));
+  ctx.fillText("近體 PPS（由白線展延）",
+               clamp(b.minX - ppsRadius * 0.55, 8, canvas.width - 230),
+               clamp(b.minY - ppsRadius * 0.55, 8, canvas.height - 30));
 
   ctx.fillStyle = "rgba(120, 175, 255, 0.95)";
   ctx.fillText("遠體", 12, canvas.height - fontSize - 12);
 
   ctx.restore();
 
-  // Tool-use/body-schema extension is drawn as a separate functional zone.
+  // Tool-use extension remains independent and is only shown according
+  // to the selected V5 auto/manual/off policy.
   drawExtensionZone(lm, b);
 }
 
@@ -927,11 +1014,11 @@ function drawResults(result) {
     drawingUtils.drawConnectors(
       lm,
       PoseLandmarker.POSE_CONNECTIONS,
-      { lineWidth: 3 }
+      { color: "#ffffff", lineWidth: 3 }
     );
     drawingUtils.drawLandmarks(
       lm,
-      { radius: 4, lineWidth: 2 }
+      { color: "#ffffff", fillColor: "#111111", radius: 4, lineWidth: 2 }
     );
   }
 
