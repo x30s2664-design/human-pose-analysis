@@ -564,26 +564,8 @@ body.analysis-fullscreen .analysis-hud {
   line-height: 1.5;
 }
 
-/* V23: draggable localized far-space */
-.far-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-.far-actions button {
-  min-height: 42px;
-  padding: 8px 12px;
-}
-#farPositionStatus {
+/* V24: far space grows directly from the PPS contour */
+#farExtensionScaleValue {
   color: #b8d5ff;
   font-variant-numeric: tabular-nums;
-}
-@media (max-width: 520px) {
-  .far-actions button {
-    flex: 1 1 140px;
-  }
-  #farPositionStatus {
-    width: 100%;
-  }
 }

@@ -62,13 +62,8 @@ const stageEl = document.querySelector(".stage");
 const maskStatusEl = document.getElementById("maskStatus");
 const qualityModeEl = document.getElementById("qualityMode");
 const poseEngineEl = document.getElementById("poseEngine");
-const farInnerScaleEl = document.getElementById("farInnerScale");
-const farOuterScaleEl = document.getElementById("farOuterScale");
-const farInnerScaleValueEl = document.getElementById("farInnerScaleValue");
-const farOuterScaleValueEl = document.getElementById("farOuterScaleValue");
-const farDragBtn = document.getElementById("farDragBtn");
-const farResetBtn = document.getElementById("farResetBtn");
-const farPositionStatusEl = document.getElementById("farPositionStatus");
+const farExtensionScaleEl = document.getElementById("farExtensionScale");
+const farExtensionScaleValueEl = document.getElementById("farExtensionScaleValue");
 const sensoryBoostEl = document.getElementById("sensoryBoost");
 const sensoryStrengthEl = document.getElementById("sensoryStrength");
 const sensoryStrengthValueEl = document.getElementById("sensoryStrengthValue");
@@ -110,11 +105,6 @@ let manualBoxDrawing = false;
 let manualBoxStart = null;
 let manualBoxCurrent = null;
 let latestPoseLandmarks = null;
-// V23 draggable far-space center.
-// null = automatically follow trunk; {x,y} = user-positioned center in normalized canvas coordinates.
-let farSpaceCenterNormalized = null;
-let farSpaceDragMode = false;
-let farSpaceDragging = false;
 
 
 // Mobile/tablet: limiting inference rate reduces heat and browser stalls.
@@ -1388,142 +1378,38 @@ function drawSpaceLabelsNearHead(lm) {
 }
 
 
-function bodyTrunkCenter(lm, b) {
-  const ids = [11, 12, 23, 24];
-  const pts = ids
-    .filter(i => visible(lm, i, 0.25))
-    .map(i => ({
-      x: lm[i].x * canvas.width,
-      y: lm[i].y * canvas.height
-    }));
+function buildPpsExtendedFarSpaceMask(ppsMask, refW) {
+  const scale = clamp(Number(farExtensionScaleEl?.value || 0.45), 0.10, 1.20);
+  const farMargin = Math.max(8, refW * scale);
 
-  if (pts.length >= 2) {
-    return {
-      x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
-      y: pts.reduce((s, p) => s + p.y, 0) / pts.length
-    };
-  }
+  // The far-space outer boundary is generated directly from the CURRENT PPS shape.
+  // This means arm/hand/head/body changes in PPS are inherited by far space.
+  const outerMask = dilateMask(ppsMask, farMargin);
 
-  return { x: b.cx, y: b.cy };
+  // Keep only the newly extended band outside PPS.
+  // This is a local morphological band, NOT "whole camera frame minus PPS".
+  const bandMask = newMaskCanvas();
+  const bctx = bandMask.getContext("2d");
+  bctx.drawImage(outerMask, 0, 0);
+  bctx.globalCompositeOperation = "destination-out";
+  bctx.drawImage(ppsMask, 0, 0);
+  bctx.globalCompositeOperation = "source-over";
+
+  return { mask: bandMask, outerMask, farMargin };
 }
 
-function buildIndependentFarSpaceMask(lm, b, refW) {
-  const mask = newMaskCanvas();
-  const mctx = mask.getContext("2d");
-  const autoCenter = bodyTrunkCenter(lm, b);
-  const center = farSpaceCenterNormalized
-    ? {
-        x: clamp(farSpaceCenterNormalized.x, 0.02, 0.98) * canvas.width,
-        y: clamp(farSpaceCenterNormalized.y, 0.02, 0.98) * canvas.height
-      }
-    : autoCenter;
+function drawFarSpaceOuterBoundary(outerMask) {
+  if (!outerMask) return;
 
-  let innerScale = Number(farInnerScaleEl?.value || 0.75);
-  let outerScale = Number(farOuterScaleEl?.value || 1.65);
-
-  innerScale = clamp(innerScale, 0.55, 1.40);
-  outerScale = clamp(outerScale, 1.10, 2.60);
-  if (outerScale <= innerScale + 0.15) outerScale = innerScale + 0.15;
-
-  // Elliptical distance field: horizontal radius follows body width;
-  // vertical radius is slightly larger to better match whole-body reach context.
-  const innerRx = Math.max(24, refW * innerScale);
-  const innerRy = Math.max(34, innerRx * 1.12);
-  const outerRx = Math.max(innerRx + 20, refW * outerScale);
-  const outerRy = Math.max(innerRy + 24, outerRx * 1.12);
-
-  // Build outer ellipse, then subtract inner ellipse => independent far-distance band.
-  mctx.fillStyle = "#fff";
-  mctx.beginPath();
-  mctx.ellipse(center.x, center.y, outerRx, outerRy, 0, 0, Math.PI * 2);
-  mctx.fill();
-
-  mctx.globalCompositeOperation = "destination-out";
-  mctx.beginPath();
-  mctx.ellipse(center.x, center.y, innerRx, innerRy, 0, 0, Math.PI * 2);
-  mctx.fill();
-  mctx.globalCompositeOperation = "source-over";
-
-  return { mask, center, innerRx, innerRy, outerRx, outerRy };
-}
-
-function drawFarSpaceBoundary(meta) {
-  if (!meta) return;
+  // Render a thin blue edge by subtracting a slightly eroded-looking inner copy.
+  // Since Canvas has no native erosion, use the mask itself as a low-alpha contour cue.
   ctx.save();
-  ctx.setLineDash([10, 8]);
-  ctx.lineWidth = Math.max(1.5, canvas.width / 650);
-
-  ctx.strokeStyle = "rgba(110, 175, 255, .88)";
-  ctx.beginPath();
-  ctx.ellipse(meta.center.x, meta.center.y, meta.outerRx, meta.outerRy, 0, 0, Math.PI * 2);
-  ctx.stroke();
-
-  ctx.strokeStyle = "rgba(90, 145, 235, .62)";
-  ctx.beginPath();
-  ctx.ellipse(meta.center.x, meta.center.y, meta.innerRx, meta.innerRy, 0, 0, Math.PI * 2);
-  ctx.stroke();
+  ctx.globalAlpha = 0.20;
+  ctx.drawImage(outerMask, 0, 0);
+  ctx.globalCompositeOperation = "source-in";
+  ctx.fillStyle = "rgba(75, 145, 255, .20)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.restore();
-}
-
-
-function drawFarSpaceCenterHandle(meta) {
-  if (!meta || (!farSpaceCenterNormalized && !farSpaceDragMode)) return;
-  ctx.save();
-  ctx.lineWidth = Math.max(2, canvas.width / 500);
-  ctx.strokeStyle = "rgba(180, 220, 255, .95)";
-  ctx.fillStyle = "rgba(25, 80, 160, .78)";
-  ctx.beginPath();
-  ctx.arc(meta.center.x, meta.center.y, Math.max(7, canvas.width / 95), 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.moveTo(meta.center.x - 18, meta.center.y);
-  ctx.lineTo(meta.center.x + 18, meta.center.y);
-  ctx.moveTo(meta.center.x, meta.center.y - 18);
-  ctx.lineTo(meta.center.x, meta.center.y + 18);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function setFarSpaceDragMode(enabled) {
-  farSpaceDragMode = !!enabled;
-  farSpaceDragging = false;
-
-  if (farDragBtn) {
-    farDragBtn.textContent = farSpaceDragMode ? "請拖動影像中的遠體中心" : "拖曳遠體位置";
-  }
-  if (farPositionStatusEl) {
-    farPositionStatusEl.textContent = farSpaceCenterNormalized
-      ? (farSpaceDragMode ? "位置：拖曳模式" : "位置：自訂")
-      : (farSpaceDragMode ? "位置：拖曳模式" : "位置：跟隨軀幹");
-  }
-
-  // Do not interfere with the manual held-object drawing mode.
-  if (!manualBoxDrawing) {
-    canvas.style.pointerEvents = farSpaceDragMode ? "auto" : "none";
-    canvas.style.cursor = farSpaceDragMode ? "grab" : "";
-    canvas.style.touchAction = farSpaceDragMode ? "none" : "";
-  }
-}
-
-function resetFarSpaceCenter() {
-  farSpaceCenterNormalized = null;
-  setFarSpaceDragMode(false);
-  if (farPositionStatusEl) farPositionStatusEl.textContent = "位置：跟隨軀幹";
-}
-
-function updateFarSpaceCenterFromPointer(event) {
-  const p = canvasPointFromPointer(event);
-  if (!p || !canvas.width || !canvas.height) return;
-  farSpaceCenterNormalized = {
-    x: clamp(p.x / canvas.width, 0.02, 0.98),
-    y: clamp(p.y / canvas.height, 0.02, 0.98)
-  };
-  if (farPositionStatusEl) {
-    farPositionStatusEl.textContent =
-      `位置：自訂 x ${(farSpaceCenterNormalized.x * 100).toFixed(1)}% / y ${(farSpaceCenterNormalized.y * 100).toFixed(1)}%`;
-  }
 }
 
 function drawSpaceZones(lm, result = null) {
@@ -1543,19 +1429,18 @@ function drawSpaceZones(lm, result = null) {
     : buildBodyMask(lm, b, ppsMargin);
   const priorityMask = buildPrioritySensoryMask(lm, ppsMargin);
   const ppsMask = mergeMaskCanvases(basePpsMask, priorityMask);
-  // V22 FAR SPACE: independently estimated from trunk-centered distance.
-  // It is NOT computed as "everything outside PPS".
-  const farSpace = buildIndependentFarSpaceMask(lm, b, refW);
+  // V24 FAR SPACE: extend outward from the actual PPS outer contour.
+  // No trunk-centered circle/ellipse and no whole-frame blue background.
+  const farSpace = buildPpsExtendedFarSpaceMask(ppsMask, refW);
   const farLayer = newMaskCanvas();
   const fctx = farLayer.getContext("2d");
   fctx.drawImage(farSpace.mask, 0, 0);
   fctx.globalCompositeOperation = "source-in";
-  fctx.fillStyle = "rgba(70, 125, 235, 0.13)";
+  fctx.fillStyle = "rgba(70, 125, 235, 0.15)";
   fctx.fillRect(0, 0, farLayer.width, farLayer.height);
   fctx.globalCompositeOperation = "source-over";
   ctx.drawImage(farLayer, 0, 0);
-  drawFarSpaceBoundary(farSpace);
-  drawFarSpaceCenterHandle(farSpace);
+  drawFarSpaceOuterBoundary(farSpace.outerMask);
 
   // Draw a subtle PPS outer boundary so the far/peripersonal transition
   // remains visible even on bright backgrounds.
@@ -2316,7 +2201,6 @@ async function startAnalysis() {
 
 function stopAnalysis() {
   running = false;
-  setFarSpaceDragMode(false);
   document.body.classList.remove("analysis-fullscreen");
   if (document.fullscreenElement && document.exitFullscreen) {
     document.exitFullscreen().catch(() => {});
@@ -2549,7 +2433,6 @@ function updateManualBoxStatus() {
 }
 
 function beginManualBoxMode() {
-  if (farSpaceDragMode) setFarSpaceDragMode(false);
   manualBoxDrawing = true;
   manualBoxStart = null;
   manualBoxCurrent = null;
@@ -2897,25 +2780,10 @@ updateExtensionMode();
 applyToolPreset();
 
 
-farDragBtn?.addEventListener("click", () => {
-  if (manualBoxDrawing) endManualBoxMode();
-  setFarSpaceDragMode(!farSpaceDragMode);
-});
-farResetBtn?.addEventListener("click", resetFarSpaceCenter);
-
 manualBoxBtn?.addEventListener("click", beginManualBoxMode);
 clearManualBoxBtn?.addEventListener("click", clearManualObjectBox);
 
 canvas.addEventListener("pointerdown", (event) => {
-  if (farSpaceDragMode && !manualBoxDrawing) {
-    event.preventDefault();
-    farSpaceDragging = true;
-    canvas.setPointerCapture?.(event.pointerId);
-    canvas.style.cursor = "grabbing";
-    updateFarSpaceCenterFromPointer(event);
-    return;
-  }
-
   if (!manualBoxDrawing) return;
   event.preventDefault();
   canvas.setPointerCapture?.(event.pointerId);
@@ -2924,26 +2792,12 @@ canvas.addEventListener("pointerdown", (event) => {
 });
 
 canvas.addEventListener("pointermove", (event) => {
-  if (farSpaceDragMode && farSpaceDragging && !manualBoxDrawing) {
-    event.preventDefault();
-    updateFarSpaceCenterFromPointer(event);
-    return;
-  }
-
   if (!manualBoxDrawing || !manualBoxStart) return;
   event.preventDefault();
   manualBoxCurrent = canvasPointFromPointer(event);
 });
 
 canvas.addEventListener("pointerup", (event) => {
-  if (farSpaceDragMode && farSpaceDragging && !manualBoxDrawing) {
-    event.preventDefault();
-    updateFarSpaceCenterFromPointer(event);
-    farSpaceDragging = false;
-    setFarSpaceDragMode(false);
-    return;
-  }
-
   if (!manualBoxDrawing || !manualBoxStart) return;
   event.preventDefault();
 
@@ -2961,10 +2815,6 @@ canvas.addEventListener("pointerup", (event) => {
 });
 
 canvas.addEventListener("pointercancel", () => {
-  if (farSpaceDragMode) {
-    farSpaceDragging = false;
-    setFarSpaceDragMode(false);
-  }
   if (manualBoxDrawing) endManualBoxMode();
 });
 
@@ -2976,17 +2826,14 @@ function updateSensoryStrengthLabel() {
 sensoryStrengthEl?.addEventListener("input", updateSensoryStrengthLabel);
 updateSensoryStrengthLabel();
 
-function updateFarSpaceLabels() {
-  if (farInnerScaleEl && farInnerScaleValueEl) {
-    farInnerScaleValueEl.textContent = `${Number(farInnerScaleEl.value).toFixed(2)} × 身寬`;
-  }
-  if (farOuterScaleEl && farOuterScaleValueEl) {
-    farOuterScaleValueEl.textContent = `${Number(farOuterScaleEl.value).toFixed(2)} × 身寬`;
+function updateFarSpaceLabel() {
+  if (farExtensionScaleEl && farExtensionScaleValueEl) {
+    farExtensionScaleValueEl.textContent =
+      `${Number(farExtensionScaleEl.value).toFixed(2)} × 身寬`;
   }
 }
-farInnerScaleEl?.addEventListener("input", updateFarSpaceLabels);
-farOuterScaleEl?.addEventListener("input", updateFarSpaceLabels);
-updateFarSpaceLabels();
+farExtensionScaleEl?.addEventListener("input", updateFarSpaceLabel);
+updateFarSpaceLabel();
 
 qualityModeEl?.addEventListener("change", applyQualityMode);
 applyQualityMode();
@@ -3020,4 +2867,4 @@ window.addEventListener("pagehide", () => {
   if (running || stream) stopTracks();
 });
 
-setStatus("等待啟動", "V23：遠體為局部藍色距離帶，可直接拖曳位置；畫面其餘區域保持透明。");
+setStatus("等待啟動", "V24：遠體直接從近體 PPS 外輪廓向外延伸，可用滑桿調整厚度，不再使用圓圈。");
