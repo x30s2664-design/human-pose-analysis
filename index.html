@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>人體姿態與空間分析</title>
-  <link rel="stylesheet" href="style.css?v=17" />
+  <link rel="stylesheet" href="style.css?v=21" />
 </head>
 <body>
   <main>
@@ -46,6 +46,7 @@
         <span id="hudExtension">展延：—</span>
         <span id="hudPps">PPS：0.18 × 身寬</span>
         <span id="hudMask">MASK：—</span>
+        <span id="hudParts">部位：等待</span>
       </div>
       <div class="stage-actions">
         <button id="stageFlipBtn" type="button" hidden>切換鏡頭</button>
@@ -72,6 +73,18 @@
         <span id="ppsScaleValue">0.18 × 身寬</span>
       </label>
 
+
+      <div id="priorityParts" class="priority-parts">
+        <strong>優先辨識部位</strong>
+        <div class="priority-grid">
+          <span id="partFace">臉：等待</span>
+          <span id="partLeftHand">左手：等待</span>
+          <span id="partRightHand">右手：等待</span>
+          <span id="partLeftFoot">左腳：等待</span>
+          <span id="partRightFoot">右腳：等待</span>
+        </div>
+      </div>
+
       <div class="engine-controls">
         <label class="select-row">
           <span>姿態引擎</span>
@@ -92,6 +105,20 @@
           <span>人體遮罩</span>
           <strong id="maskStatus">等待人體</strong>
         </div>
+      </div>
+
+
+      <div class="sensory-controls">
+        <label class="toggle-row">
+          <span>臉／手／腳感受加強</span>
+          <input id="sensoryBoost" type="checkbox" checked>
+          <strong>開啟</strong>
+        </label>
+        <label class="range-row">
+          感受區強度
+          <input id="sensoryStrength" type="range" min="0.60" max="1.60" step="0.05" value="1.00">
+          <span id="sensoryStrengthValue">1.00 ×</span>
+        </label>
       </div>
 
       <div class="extension-controls">
@@ -168,6 +195,6 @@
     </p>
   </main>
 
-  <script type="module" src="app.js?v=17"></script>
+  <script type="module" src="app.js?v=21"></script>
 </body>
 </html>

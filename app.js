@@ -62,6 +62,15 @@ const stageEl = document.querySelector(".stage");
 const maskStatusEl = document.getElementById("maskStatus");
 const qualityModeEl = document.getElementById("qualityMode");
 const poseEngineEl = document.getElementById("poseEngine");
+const sensoryBoostEl = document.getElementById("sensoryBoost");
+const sensoryStrengthEl = document.getElementById("sensoryStrength");
+const sensoryStrengthValueEl = document.getElementById("sensoryStrengthValue");
+const partFaceEl = document.getElementById("partFace");
+const partLeftHandEl = document.getElementById("partLeftHand");
+const partRightHandEl = document.getElementById("partRightHand");
+const partLeftFootEl = document.getElementById("partLeftFoot");
+const partRightFootEl = document.getElementById("partRightFoot");
+const hudParts = document.getElementById("hudParts");
 
 
 
@@ -342,6 +351,52 @@ function supportLeg(lm) {
   return "BOTH";
 }
 
+
+
+function priorityGroupState(lm, indices, minCount = 1, minVisibility = 0.25) {
+  const pts = indices
+    .filter(i => lm?.[i] && (lm[i].visibility ?? 1) >= minVisibility)
+    .map(i => lm[i]);
+
+  if (pts.length < minCount) return null;
+
+  return {
+    x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
+    y: pts.reduce((s, p) => s + p.y, 0) / pts.length,
+    count: pts.length
+  };
+}
+
+function updatePriorityParts(lm) {
+  if (!lm?.length) return;
+
+  const face = priorityGroupState(lm, [0,1,2,3,4,5,6,7,8,9,10], 3, 0.22);
+  const leftHand = priorityGroupState(lm, [15,17,19,21], 1, 0.25);
+  const rightHand = priorityGroupState(lm, [16,18,20,22], 1, 0.25);
+  const leftFoot = priorityGroupState(lm, [27,29,31], 2, 0.25);
+  const rightFoot = priorityGroupState(lm, [28,30,32], 2, 0.25);
+
+  const fmt = (label, s) => s
+    ? `${label}：✓ x ${(s.x*100).toFixed(1)}% / y ${(s.y*100).toFixed(1)}%`
+    : `${label}：未辨識`;
+
+  if (partFaceEl) partFaceEl.textContent = fmt("臉", face);
+  if (partLeftHandEl) partLeftHandEl.textContent = fmt("左手", leftHand);
+  if (partRightHandEl) partRightHandEl.textContent = fmt("右手", rightHand);
+  if (partLeftFootEl) partLeftFootEl.textContent = fmt("左腳", leftFoot);
+  if (partRightFootEl) partRightFootEl.textContent = fmt("右腳", rightFoot);
+
+  if (hudParts) {
+    const found = [
+      face && "臉",
+      leftHand && "左手",
+      rightHand && "右手",
+      leftFoot && "左腳",
+      rightFoot && "右腳"
+    ].filter(Boolean);
+    hudParts.textContent = `部位：${found.length ? found.join("・") : "未辨識"}`;
+  }
+}
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
@@ -1236,6 +1291,90 @@ function gripProxyGeometry(lm, hand, held, b) {
   return { start, end, wrist: f.wrist };
 }
 
+
+function buildPrioritySensoryMask(lm, baseMargin) {
+  const mask = newMaskCanvas();
+  const mctx = mask.getContext("2d");
+
+  if (!sensoryBoostEl?.checked) return mask;
+
+  const strength = clamp(Number(sensoryStrengthEl?.value || 1), 0.60, 1.60);
+  const face = priorityGroupState(lm, [0,1,2,3,4,5,6,7,8,9,10], 3, 0.22);
+  const leftHand = priorityGroupState(lm, [15,17,19,21], 1, 0.25);
+  const rightHand = priorityGroupState(lm, [16,18,20,22], 1, 0.25);
+  const leftFoot = priorityGroupState(lm, [27,29,31], 2, 0.25);
+  const rightFoot = priorityGroupState(lm, [28,30,32], 2, 0.25);
+
+  const zones = [
+    { p: face, r: baseMargin * 1.35 * strength },
+    { p: leftHand, r: baseMargin * 1.65 * strength },
+    { p: rightHand, r: baseMargin * 1.65 * strength },
+    { p: leftFoot, r: baseMargin * 1.35 * strength },
+    { p: rightFoot, r: baseMargin * 1.35 * strength }
+  ];
+
+  mctx.fillStyle = "#fff";
+  for (const z of zones) {
+    if (!z.p) continue;
+    mctx.beginPath();
+    mctx.arc(z.p.x * canvas.width, z.p.y * canvas.height, Math.max(10, z.r), 0, Math.PI * 2);
+    mctx.fill();
+  }
+
+  return mask;
+}
+
+function mergeMaskCanvases(base, extra) {
+  const out = newMaskCanvas();
+  const octx = out.getContext("2d");
+  if (base) octx.drawImage(base, 0, 0);
+  if (extra) octx.drawImage(extra, 0, 0);
+  return out;
+}
+
+
+function drawSpaceLabelsNearHead(lm) {
+  if (!lm?.length) return;
+
+  const head = priorityGroupState(lm, [0,1,2,3,4,5,6,7,8,9,10], 3, 0.22);
+  if (!head) return;
+
+  const x = head.x * canvas.width;
+  const y = head.y * canvas.height;
+  const fs = Math.max(14, Math.round(canvas.width / 58));
+  const gap = fs + 10;
+  let startY = y - gap * 3 - 18;
+  if (startY < 8) startY = y + 35;
+
+  const items = [
+    ["遠體空間", "rgba(45,105,220,.92)", "#fff"],
+    ["近體空間 PPS", "rgba(255,214,70,.96)", "#111"],
+    ["本體空間", "rgba(220,65,65,.94)", "#fff"]
+  ];
+
+  ctx.save();
+  ctx.font = `800 ${fs}px system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  items.forEach((it, i) => {
+    const yy = startY + i * gap;
+    const w = ctx.measureText(it[0]).width + 20;
+    const h = fs + 10;
+    const left = clamp(x - w/2, 4, canvas.width - w - 4);
+    const top = clamp(yy - h/2, 4, canvas.height - h - 4);
+    ctx.fillStyle = it[1];
+    ctx.fillRect(left, top, w, h);
+    ctx.strokeStyle = "rgba(0,0,0,.85)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(left, top, w, h);
+    ctx.fillStyle = it[2];
+    ctx.fillText(it[0], left + w/2, top + h/2);
+  });
+
+  ctx.restore();
+}
+
 function drawSpaceZones(lm, result = null) {
   const b = bodyBounds(lm);
   if (!b) return;
@@ -1248,9 +1387,11 @@ function drawSpaceZones(lm, result = null) {
   // Fall back to the articulated reconstruction when segmentation is absent.
   const segmentedBody = segmentationBodyMask(result);
   const bodyMask = segmentedBody || buildBodyMask(lm, b, 0);
-  const ppsMask = segmentedBody
+  const basePpsMask = segmentedBody
     ? dilateMask(segmentedBody, ppsMargin)
     : buildBodyMask(lm, b, ppsMargin);
+  const priorityMask = buildPrioritySensoryMask(lm, ppsMargin);
+  const ppsMask = mergeMaskCanvases(basePpsMask, priorityMask);
 
   // FAR SPACE = everything outside the PPS envelope.
   const farLayer = newMaskCanvas();
@@ -1301,6 +1442,7 @@ function drawSpaceZones(lm, result = null) {
   ctx.fillText("遠體", 12, canvas.height - fontSize - 12);
   ctx.restore();
 
+  drawSpaceLabelsNearHead(lm);
   drawExtensionZone(lm, b);
 }
 function showAnalysis(lm) {
@@ -2457,6 +2599,8 @@ function drawResults(result) {
     return;
   }
 
+  updatePriorityParts(result.landmarks[0]);
+
   const drawingUtils = new DrawingUtils(ctx);
 
   // Draw space classification first, then the pose skeleton on top.
@@ -2635,6 +2779,14 @@ canvas.addEventListener("pointercancel", () => {
   if (manualBoxDrawing) endManualBoxMode();
 });
 
+function updateSensoryStrengthLabel() {
+  if (sensoryStrengthEl && sensoryStrengthValueEl) {
+    sensoryStrengthValueEl.textContent = `${Number(sensoryStrengthEl.value).toFixed(2)} ×`;
+  }
+}
+sensoryStrengthEl?.addEventListener("input", updateSensoryStrengthLabel);
+updateSensoryStrengthLabel();
+
 qualityModeEl?.addEventListener("change", applyQualityMode);
 applyQualityMode();
 
@@ -2667,4 +2819,4 @@ window.addEventListener("pagehide", () => {
   if (running || stream) stopTracks();
 });
 
-setStatus("等待啟動", "V17：MediaPipe 33點 + Segmentation + Hand/Object contact + 全螢幕。");
+setStatus("等待啟動", "V21 Stable：以可用 V17 為基礎，新增臉／手／腳優先顯示與局部 PPS 加強。");
