@@ -1407,7 +1407,7 @@ function drawFarSpaceOuterBoundary(outerMask) {
   ctx.globalAlpha = 0.20;
   ctx.drawImage(outerMask, 0, 0);
   ctx.globalCompositeOperation = "source-in";
-  ctx.fillStyle = "rgba(75, 145, 255, .20)";
+  ctx.fillStyle = "rgba(8, 38, 115, .30)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.restore();
 }
@@ -1436,7 +1436,7 @@ function drawSpaceZones(lm, result = null) {
   const fctx = farLayer.getContext("2d");
   fctx.drawImage(farSpace.mask, 0, 0);
   fctx.globalCompositeOperation = "source-in";
-  fctx.fillStyle = "rgba(70, 125, 235, 0.15)";
+  fctx.fillStyle = "rgba(8, 38, 115, 0.58)";
   fctx.fillRect(0, 0, farLayer.width, farLayer.height);
   fctx.globalCompositeOperation = "source-over";
   ctx.drawImage(farLayer, 0, 0);
@@ -2867,4 +2867,4 @@ window.addEventListener("pagehide", () => {
   if (running || stream) stopTracks();
 });
 
-setStatus("等待啟動", "V24：遠體直接從近體 PPS 外輪廓向外延伸，可用滑桿調整厚度，不再使用圓圈。");
+setStatus("等待啟動", "V25：遠體維持沿 PPS 外緣延伸，改用高辨識度深藍色顯示。");
