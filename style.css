@@ -1,112 +1,36 @@
 * { box-sizing: border-box; }
-
-:root {
-  color-scheme: dark;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-               "Noto Sans TC", sans-serif;
-}
-
-html, body {
+body {
   margin: 0;
-  min-height: 100%;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: #111;
   color: #f5f5f5;
 }
-
-body {
-  padding:
-    env(safe-area-inset-top)
-    env(safe-area-inset-right)
-    env(safe-area-inset-bottom)
-    env(safe-area-inset-left);
-}
-
 main {
-  width: min(1050px, 94vw);
+  width: min(1100px, 94vw);
   margin: 0 auto;
-  padding: 22px 0 36px;
+  padding: 24px 0 40px;
 }
-
-h1 {
-  margin: 0 0 8px;
-  font-size: clamp(2rem, 7vw, 3.2rem);
-  line-height: 1.12;
-}
-
-.lead, .note {
-  color: #bbb;
-  line-height: 1.6;
-}
-
+h1 { margin-bottom: 6px; }
+.lead, .note { color: #bbb; }
 .controls {
   display: flex;
+  gap: 12px;
   flex-wrap: wrap;
-  gap: 10px;
-  align-items: stretch;
-  margin: 18px 0 12px;
-}
-
-button, select {
-  min-height: 48px;
-  border-radius: 10px;
-  border: 1px solid #555;
-  padding: 10px 14px;
-  font: inherit;
-  font-size: 16px;
-}
-
-button {
-  cursor: pointer;
-  background: #2a2a2a;
-  color: #fff;
-}
-
-button.primary {
-  background: #f5f5f5;
-  color: #111;
-  font-weight: 700;
-}
-
-button:disabled, select:disabled {
-  opacity: .45;
-  cursor: not-allowed;
-}
-
-.camera-label {
-  display: flex;
-  gap: 8px;
   align-items: center;
-  min-height: 48px;
+  margin: 18px 0;
 }
-
-.camera-label select {
-  max-width: min(310px, 48vw);
+button, select {
+  font: inherit;
+  padding: 9px 12px;
 }
-
-.status-box {
-  display: grid;
-  gap: 4px;
-  margin: 10px 0 14px;
-  padding: 12px 14px;
-  background: #222;
-  border-radius: 12px;
-}
-
-.status-box small {
-  color: #aaa;
-  overflow-wrap: anywhere;
-}
-
 .stage {
   position: relative;
   width: 100%;
-  aspect-ratio: 4 / 3;
-  max-height: 72vh;
+  aspect-ratio: 16 / 9;
   background: #000;
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: 12px;
 }
-
 video, canvas {
   position: absolute;
   inset: 0;
@@ -114,402 +38,19 @@ video, canvas {
   height: 100%;
   object-fit: contain;
 }
-
-canvas {
-  pointer-events: none;
-}
-
-.placeholder {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-content: center;
-  text-align: center;
-  color: #aaa;
-  padding: 24px;
-  background: #050505;
-}
-
-.placeholder div {
-  font-size: 52px;
-}
-
+video { transform: scaleX(-1); }
+canvas { transform: scaleX(-1); pointer-events: none; }
 .panel {
   margin-top: 16px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 8px;
-}
-
-.panel div {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  padding: 13px;
-  background: #222;
-  border-radius: 11px;
-}
-
-.panel strong {
-  color: #bbb;
-  font-size: .92rem;
-}
-
-.panel span {
-  font-size: clamp(1.15rem, 4vw, 1.45rem);
-  font-weight: 700;
-  overflow-wrap: anywhere;
-}
-
-.note {
-  margin-top: 16px;
-  font-size: .9rem;
-}
-
-@media (min-width: 720px) {
-  .stage {
-    aspect-ratio: 16 / 9;
-  }
-
-  .panel {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 520px) {
-  main {
-    width: 94vw;
-    padding-top: 18px;
-  }
-
-  .controls > button {
-    flex: 1 1 calc(50% - 6px);
-  }
-
-  .camera-label {
-    width: 100%;
-  }
-
-  .camera-label select {
-    flex: 1;
-    max-width: none;
-  }
-}
-
-
-/* V2.1: make sure the camera placeholder never covers the live video. */
-.placeholder[hidden] {
-  display: none !important;
-}
-
-
-/* V3: body / peripersonal / extrapersonal space */
-.space-controls {
-  margin-top: 14px;
-  padding: 12px 14px;
-  background: #1e1e1e;
+  padding: 14px;
+  background: #1c1c1c;
   border-radius: 12px;
 }
-
-.legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 18px;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.legend span {
-  display: inline-flex;
-  gap: 7px;
-  align-items: center;
-  font-weight: 700;
-}
-
-.dot {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.body-dot { background: rgba(255, 80, 80, .9); }
-.peri-dot { background: rgba(255, 210, 70, .9); }
-.extra-dot { background: rgba(80, 150, 255, .9); }
-
-.range-row {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 10px;
-  align-items: center;
-  color: #ddd;
-}
-
-.range-row input {
-  width: 100%;
-}
-
-@media (max-width: 520px) {
-  .range-row {
-    grid-template-columns: 1fr;
-  }
-}
-
-
-/* V4: tool-use extension zone */
-.extension-dot { background: rgba(80, 230, 150, .95); }
-
-.extension-controls {
-  display: grid;
-  gap: 10px;
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid #3a3a3a;
-}
-
-.toggle-row,
-.select-row {
-  display: grid;
-  grid-template-columns: minmax(90px, auto) 1fr auto;
-  gap: 10px;
-  align-items: center;
-}
-
-.toggle-row input[type="checkbox"] {
-  width: 24px;
-  height: 24px;
-  justify-self: start;
-}
-
-.select-row select {
-  width: 100%;
-  min-height: 44px;
-}
-
-@media (max-width: 520px) {
-  .toggle-row,
-  .select-row {
-    grid-template-columns: 1fr;
-  }
-}
-
-
-/* V5: auto object-confirmed extension */
-.detection-row {
-  display: grid;
-  grid-template-columns: minmax(90px, auto) 1fr;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 0;
-}
-
-.detection-row strong {
-  justify-self: end;
-  overflow-wrap: anywhere;
-}
-
-.extension-note {
-  color: #aaa;
-  line-height: 1.55;
-}
-
-@media (max-width: 520px) {
-  .detection-row {
-    grid-template-columns: 1fr;
-  }
-  .detection-row strong {
-    justify-self: start;
-  }
-}
-
-
-/* V12: manual held-object ROI fallback */
-.manual-box-row {
-  display: grid;
-  grid-template-columns: minmax(90px, auto) 1fr;
-  gap: 8px 10px;
-  align-items: center;
-  padding: 10px 0;
-}
-
-.manual-box-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.manual-box-actions button {
-  min-height: 42px;
-  padding: 8px 12px;
-}
-
-#manualBoxStatus {
-  grid-column: 2;
-  color: #aaa;
-  line-height: 1.45;
-}
-
-@media (max-width: 520px) {
-  .manual-box-row {
-    grid-template-columns: 1fr;
-  }
-
-  #manualBoxStatus {
-    grid-column: 1;
-  }
-
-  .manual-box-actions button {
-    flex: 1 1 140px;
-  }
-}
-
-
-/* V16: immersive fullscreen analysis */
-.analysis-hud,
-.stage-actions {
-  position: absolute;
-  z-index: 8;
-}
-
-.analysis-hud {
-  left: max(10px, env(safe-area-inset-left));
-  top: max(10px, env(safe-area-inset-top));
-  display: grid;
-  gap: 3px;
-  max-width: min(70vw, 420px);
-  padding: 9px 11px;
-  border: 1px solid rgba(255,255,255,.2);
-  border-radius: 10px;
-  background: rgba(0,0,0,.52);
-  color: #fff;
-  font-size: clamp(12px, 2.6vw, 15px);
-  line-height: 1.35;
-  pointer-events: none;
-  backdrop-filter: blur(5px);
-}
-
-.analysis-hud[hidden] {
-  display: none !important;
-}
-
-.analysis-hud strong {
-  color: #fff;
-}
-
-.analysis-hud span {
-  color: #ddd;
-}
-
-.stage-actions {
-  right: max(10px, env(safe-area-inset-right));
-  top: max(10px, env(safe-area-inset-top));
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.stage-actions button {
-  min-height: 40px;
-  padding: 7px 10px;
-  border-radius: 9px;
-  border: 1px solid rgba(255,255,255,.28);
-  background: rgba(0,0,0,.58);
-  color: #fff;
-  font-size: 14px;
-  backdrop-filter: blur(5px);
-}
-
-.stage-actions button[hidden] {
-  display: none !important;
-}
-
-/* CSS immersive mode works even when the browser rejects the Fullscreen API. */
-body.analysis-fullscreen {
-  overflow: hidden;
-  background: #000;
-  padding: 0 !important;
-}
-
-body.analysis-fullscreen main {
-  width: 100vw;
-  height: 100dvh;
-  margin: 0;
-  padding: 0;
-}
-
-body.analysis-fullscreen main > header,
-body.analysis-fullscreen .controls,
-body.analysis-fullscreen .status-box,
-body.analysis-fullscreen .space-controls,
-body.analysis-fullscreen .panel,
-body.analysis-fullscreen .note {
-  display: none !important;
-}
-
-body.analysis-fullscreen .stage {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  width: 100vw;
-  height: 100dvh;
-  max-height: none;
-  aspect-ratio: auto;
-  border-radius: 0;
-  background: #000;
-}
-
-/*
-  Keep contain for both video and canvas.
-  MediaPipe coordinates are based on the complete camera frame, so forcing
-  object-fit: cover here would crop the video while leaving landmark
-  coordinates uncropped and would make skeleton/PPS/object boxes drift.
-*/
-body.analysis-fullscreen .stage video,
-body.analysis-fullscreen .stage canvas {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-
-body.analysis-fullscreen .analysis-hud {
-  display: grid;
-}
-
-@media (orientation: landscape) {
-  body.analysis-fullscreen .analysis-hud {
-    max-width: min(42vw, 380px);
-  }
-}
-
-/* Fullscreen element styling for browsers that support requestFullscreen(). */
-.stage:fullscreen,
-.stage:-webkit-full-screen {
-  width: 100vw;
-  height: 100vh;
-  max-height: none;
-  aspect-ratio: auto;
-  border-radius: 0;
-  background: #000;
-}
-
-.stage:fullscreen video,
-.stage:fullscreen canvas,
-.stage:-webkit-full-screen video,
-.stage:-webkit-full-screen canvas {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-
-/* V17: engine and diagnostics */
-.engine-controls {
-  display: grid;
-  gap: 10px;
-  margin-top: 14px;
-  padding: 12px 0 4px;
-  border-top: 1px solid #3a3a3a;
-}
-#maskStatus {
-  font-variant-numeric: tabular-nums;
+.panel div {
+  padding: 8px;
+  background: #252525;
+  border-radius: 8px;
 }
