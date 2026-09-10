@@ -66,6 +66,9 @@ const farInnerScaleEl = document.getElementById("farInnerScale");
 const farOuterScaleEl = document.getElementById("farOuterScale");
 const farInnerScaleValueEl = document.getElementById("farInnerScaleValue");
 const farOuterScaleValueEl = document.getElementById("farOuterScaleValue");
+const farDragBtn = document.getElementById("farDragBtn");
+const farResetBtn = document.getElementById("farResetBtn");
+const farPositionStatusEl = document.getElementById("farPositionStatus");
 const sensoryBoostEl = document.getElementById("sensoryBoost");
 const sensoryStrengthEl = document.getElementById("sensoryStrength");
 const sensoryStrengthValueEl = document.getElementById("sensoryStrengthValue");
@@ -107,6 +110,11 @@ let manualBoxDrawing = false;
 let manualBoxStart = null;
 let manualBoxCurrent = null;
 let latestPoseLandmarks = null;
+// V23 draggable far-space center.
+// null = automatically follow trunk; {x,y} = user-positioned center in normalized canvas coordinates.
+let farSpaceCenterNormalized = null;
+let farSpaceDragMode = false;
+let farSpaceDragging = false;
 
 
 // Mobile/tablet: limiting inference rate reduces heat and browser stalls.
@@ -1402,21 +1410,27 @@ function bodyTrunkCenter(lm, b) {
 function buildIndependentFarSpaceMask(lm, b, refW) {
   const mask = newMaskCanvas();
   const mctx = mask.getContext("2d");
-  const center = bodyTrunkCenter(lm, b);
+  const autoCenter = bodyTrunkCenter(lm, b);
+  const center = farSpaceCenterNormalized
+    ? {
+        x: clamp(farSpaceCenterNormalized.x, 0.02, 0.98) * canvas.width,
+        y: clamp(farSpaceCenterNormalized.y, 0.02, 0.98) * canvas.height
+      }
+    : autoCenter;
 
-  let innerScale = Number(farInnerScaleEl?.value || 0.85);
-  let outerScale = Number(farOuterScaleEl?.value || 2.50);
+  let innerScale = Number(farInnerScaleEl?.value || 0.75);
+  let outerScale = Number(farOuterScaleEl?.value || 1.65);
 
-  innerScale = clamp(innerScale, 0.60, 1.60);
-  outerScale = clamp(outerScale, 1.60, 4.00);
+  innerScale = clamp(innerScale, 0.55, 1.40);
+  outerScale = clamp(outerScale, 1.10, 2.60);
   if (outerScale <= innerScale + 0.15) outerScale = innerScale + 0.15;
 
   // Elliptical distance field: horizontal radius follows body width;
   // vertical radius is slightly larger to better match whole-body reach context.
   const innerRx = Math.max(24, refW * innerScale);
-  const innerRy = Math.max(36, innerRx * 1.22);
+  const innerRy = Math.max(34, innerRx * 1.12);
   const outerRx = Math.max(innerRx + 20, refW * outerScale);
-  const outerRy = Math.max(innerRy + 30, outerRx * 1.22);
+  const outerRy = Math.max(innerRy + 24, outerRx * 1.12);
 
   // Build outer ellipse, then subtract inner ellipse => independent far-distance band.
   mctx.fillStyle = "#fff";
@@ -1451,6 +1465,67 @@ function drawFarSpaceBoundary(meta) {
   ctx.restore();
 }
 
+
+function drawFarSpaceCenterHandle(meta) {
+  if (!meta || (!farSpaceCenterNormalized && !farSpaceDragMode)) return;
+  ctx.save();
+  ctx.lineWidth = Math.max(2, canvas.width / 500);
+  ctx.strokeStyle = "rgba(180, 220, 255, .95)";
+  ctx.fillStyle = "rgba(25, 80, 160, .78)";
+  ctx.beginPath();
+  ctx.arc(meta.center.x, meta.center.y, Math.max(7, canvas.width / 95), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(meta.center.x - 18, meta.center.y);
+  ctx.lineTo(meta.center.x + 18, meta.center.y);
+  ctx.moveTo(meta.center.x, meta.center.y - 18);
+  ctx.lineTo(meta.center.x, meta.center.y + 18);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function setFarSpaceDragMode(enabled) {
+  farSpaceDragMode = !!enabled;
+  farSpaceDragging = false;
+
+  if (farDragBtn) {
+    farDragBtn.textContent = farSpaceDragMode ? "請拖動影像中的遠體中心" : "拖曳遠體位置";
+  }
+  if (farPositionStatusEl) {
+    farPositionStatusEl.textContent = farSpaceCenterNormalized
+      ? (farSpaceDragMode ? "位置：拖曳模式" : "位置：自訂")
+      : (farSpaceDragMode ? "位置：拖曳模式" : "位置：跟隨軀幹");
+  }
+
+  // Do not interfere with the manual held-object drawing mode.
+  if (!manualBoxDrawing) {
+    canvas.style.pointerEvents = farSpaceDragMode ? "auto" : "none";
+    canvas.style.cursor = farSpaceDragMode ? "grab" : "";
+    canvas.style.touchAction = farSpaceDragMode ? "none" : "";
+  }
+}
+
+function resetFarSpaceCenter() {
+  farSpaceCenterNormalized = null;
+  setFarSpaceDragMode(false);
+  if (farPositionStatusEl) farPositionStatusEl.textContent = "位置：跟隨軀幹";
+}
+
+function updateFarSpaceCenterFromPointer(event) {
+  const p = canvasPointFromPointer(event);
+  if (!p || !canvas.width || !canvas.height) return;
+  farSpaceCenterNormalized = {
+    x: clamp(p.x / canvas.width, 0.02, 0.98),
+    y: clamp(p.y / canvas.height, 0.02, 0.98)
+  };
+  if (farPositionStatusEl) {
+    farPositionStatusEl.textContent =
+      `位置：自訂 x ${(farSpaceCenterNormalized.x * 100).toFixed(1)}% / y ${(farSpaceCenterNormalized.y * 100).toFixed(1)}%`;
+  }
+}
+
 function drawSpaceZones(lm, result = null) {
   const b = bodyBounds(lm);
   if (!b) return;
@@ -1475,11 +1550,12 @@ function drawSpaceZones(lm, result = null) {
   const fctx = farLayer.getContext("2d");
   fctx.drawImage(farSpace.mask, 0, 0);
   fctx.globalCompositeOperation = "source-in";
-  fctx.fillStyle = "rgba(70, 125, 235, 0.18)";
+  fctx.fillStyle = "rgba(70, 125, 235, 0.13)";
   fctx.fillRect(0, 0, farLayer.width, farLayer.height);
   fctx.globalCompositeOperation = "source-over";
   ctx.drawImage(farLayer, 0, 0);
   drawFarSpaceBoundary(farSpace);
+  drawFarSpaceCenterHandle(farSpace);
 
   // Draw a subtle PPS outer boundary so the far/peripersonal transition
   // remains visible even on bright backgrounds.
@@ -2240,6 +2316,7 @@ async function startAnalysis() {
 
 function stopAnalysis() {
   running = false;
+  setFarSpaceDragMode(false);
   document.body.classList.remove("analysis-fullscreen");
   if (document.fullscreenElement && document.exitFullscreen) {
     document.exitFullscreen().catch(() => {});
@@ -2472,6 +2549,7 @@ function updateManualBoxStatus() {
 }
 
 function beginManualBoxMode() {
+  if (farSpaceDragMode) setFarSpaceDragMode(false);
   manualBoxDrawing = true;
   manualBoxStart = null;
   manualBoxCurrent = null;
@@ -2819,10 +2897,25 @@ updateExtensionMode();
 applyToolPreset();
 
 
+farDragBtn?.addEventListener("click", () => {
+  if (manualBoxDrawing) endManualBoxMode();
+  setFarSpaceDragMode(!farSpaceDragMode);
+});
+farResetBtn?.addEventListener("click", resetFarSpaceCenter);
+
 manualBoxBtn?.addEventListener("click", beginManualBoxMode);
 clearManualBoxBtn?.addEventListener("click", clearManualObjectBox);
 
 canvas.addEventListener("pointerdown", (event) => {
+  if (farSpaceDragMode && !manualBoxDrawing) {
+    event.preventDefault();
+    farSpaceDragging = true;
+    canvas.setPointerCapture?.(event.pointerId);
+    canvas.style.cursor = "grabbing";
+    updateFarSpaceCenterFromPointer(event);
+    return;
+  }
+
   if (!manualBoxDrawing) return;
   event.preventDefault();
   canvas.setPointerCapture?.(event.pointerId);
@@ -2831,12 +2924,26 @@ canvas.addEventListener("pointerdown", (event) => {
 });
 
 canvas.addEventListener("pointermove", (event) => {
+  if (farSpaceDragMode && farSpaceDragging && !manualBoxDrawing) {
+    event.preventDefault();
+    updateFarSpaceCenterFromPointer(event);
+    return;
+  }
+
   if (!manualBoxDrawing || !manualBoxStart) return;
   event.preventDefault();
   manualBoxCurrent = canvasPointFromPointer(event);
 });
 
 canvas.addEventListener("pointerup", (event) => {
+  if (farSpaceDragMode && farSpaceDragging && !manualBoxDrawing) {
+    event.preventDefault();
+    updateFarSpaceCenterFromPointer(event);
+    farSpaceDragging = false;
+    setFarSpaceDragMode(false);
+    return;
+  }
+
   if (!manualBoxDrawing || !manualBoxStart) return;
   event.preventDefault();
 
@@ -2854,6 +2961,10 @@ canvas.addEventListener("pointerup", (event) => {
 });
 
 canvas.addEventListener("pointercancel", () => {
+  if (farSpaceDragMode) {
+    farSpaceDragging = false;
+    setFarSpaceDragMode(false);
+  }
   if (manualBoxDrawing) endManualBoxMode();
 });
 
@@ -2909,4 +3020,4 @@ window.addEventListener("pagehide", () => {
   if (running || stream) stopTracks();
 });
 
-setStatus("等待啟動", "V22：遠體空間改為軀幹中心＋身寬的獨立距離場，不再使用 PPS 排除法。");
+setStatus("等待啟動", "V23：遠體為局部藍色距離帶，可直接拖曳位置；畫面其餘區域保持透明。");

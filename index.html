@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>人體姿態與空間分析</title>
-  <link rel="stylesheet" href="style.css?v=22" />
+  <link rel="stylesheet" href="style.css?v=23" />
 </head>
 <body>
   <main>
@@ -125,17 +125,22 @@
         <strong>遠體空間（獨立估算）</strong>
         <label class="range-row">
           遠體起始
-          <input id="farInnerScale" type="range" min="0.60" max="1.60" step="0.05" value="0.85">
-          <span id="farInnerScaleValue">0.85 × 身寬</span>
+          <input id="farInnerScale" type="range" min="0.55" max="1.40" step="0.05" value="0.75">
+          <span id="farInnerScaleValue">0.75 × 身寬</span>
         </label>
         <label class="range-row">
           遠體終止
-          <input id="farOuterScale" type="range" min="1.60" max="4.00" step="0.10" value="2.50">
-          <span id="farOuterScaleValue">2.50 × 身寬</span>
+          <input id="farOuterScale" type="range" min="1.10" max="2.60" step="0.05" value="1.65">
+          <span id="farOuterScaleValue">1.65 × 身寬</span>
         </label>
+        <div class="far-actions">
+          <button id="farDragBtn" type="button">拖曳遠體位置</button>
+          <button id="farResetBtn" type="button">跟隨人體</button>
+          <span id="farPositionStatus">位置：跟隨軀幹</span>
+        </div>
         <small class="far-note">
-          遠體空間不再使用「畫面 − PPS」排除法，而是由人體軀幹中心與身寬建立獨立距離帶。
-          超過遠體終止範圍的區域維持未分類背景。
+          藍色只顯示在遠體距離帶內，畫面其他區域保持透明。按「拖曳遠體位置」後，
+          可直接在影像上拖動遠體中心；按「跟隨人體」可恢復以軀幹中心自動定位。
         </small>
       </div>
 
@@ -213,6 +218,6 @@
     </p>
   </main>
 
-  <script type="module" src="app.js?v=22"></script>
+  <script type="module" src="app.js?v=23"></script>
 </body>
 </html>
