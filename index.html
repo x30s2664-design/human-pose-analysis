@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>人體姿態與空間分析</title>
-  <link rel="stylesheet" href="style.css?v=21" />
+  <link rel="stylesheet" href="style.css?v=22" />
 </head>
 <body>
   <main>
@@ -121,6 +121,24 @@
         </label>
       </div>
 
+      <div class="far-controls">
+        <strong>遠體空間（獨立估算）</strong>
+        <label class="range-row">
+          遠體起始
+          <input id="farInnerScale" type="range" min="0.60" max="1.60" step="0.05" value="0.85">
+          <span id="farInnerScaleValue">0.85 × 身寬</span>
+        </label>
+        <label class="range-row">
+          遠體終止
+          <input id="farOuterScale" type="range" min="1.60" max="4.00" step="0.10" value="2.50">
+          <span id="farOuterScaleValue">2.50 × 身寬</span>
+        </label>
+        <small class="far-note">
+          遠體空間不再使用「畫面 − PPS」排除法，而是由人體軀幹中心與身寬建立獨立距離帶。
+          超過遠體終止範圍的區域維持未分類背景。
+        </small>
+      </div>
+
       <div class="extension-controls">
         <label class="select-row">
           <span>展延判斷</span>
@@ -195,6 +213,6 @@
     </p>
   </main>
 
-  <script type="module" src="app.js?v=21"></script>
+  <script type="module" src="app.js?v=22"></script>
 </body>
 </html>

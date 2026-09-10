@@ -62,6 +62,10 @@ const stageEl = document.querySelector(".stage");
 const maskStatusEl = document.getElementById("maskStatus");
 const qualityModeEl = document.getElementById("qualityMode");
 const poseEngineEl = document.getElementById("poseEngine");
+const farInnerScaleEl = document.getElementById("farInnerScale");
+const farOuterScaleEl = document.getElementById("farOuterScale");
+const farInnerScaleValueEl = document.getElementById("farInnerScaleValue");
+const farOuterScaleValueEl = document.getElementById("farOuterScaleValue");
 const sensoryBoostEl = document.getElementById("sensoryBoost");
 const sensoryStrengthEl = document.getElementById("sensoryStrength");
 const sensoryStrengthValueEl = document.getElementById("sensoryStrengthValue");
@@ -1375,6 +1379,78 @@ function drawSpaceLabelsNearHead(lm) {
   ctx.restore();
 }
 
+
+function bodyTrunkCenter(lm, b) {
+  const ids = [11, 12, 23, 24];
+  const pts = ids
+    .filter(i => visible(lm, i, 0.25))
+    .map(i => ({
+      x: lm[i].x * canvas.width,
+      y: lm[i].y * canvas.height
+    }));
+
+  if (pts.length >= 2) {
+    return {
+      x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
+      y: pts.reduce((s, p) => s + p.y, 0) / pts.length
+    };
+  }
+
+  return { x: b.cx, y: b.cy };
+}
+
+function buildIndependentFarSpaceMask(lm, b, refW) {
+  const mask = newMaskCanvas();
+  const mctx = mask.getContext("2d");
+  const center = bodyTrunkCenter(lm, b);
+
+  let innerScale = Number(farInnerScaleEl?.value || 0.85);
+  let outerScale = Number(farOuterScaleEl?.value || 2.50);
+
+  innerScale = clamp(innerScale, 0.60, 1.60);
+  outerScale = clamp(outerScale, 1.60, 4.00);
+  if (outerScale <= innerScale + 0.15) outerScale = innerScale + 0.15;
+
+  // Elliptical distance field: horizontal radius follows body width;
+  // vertical radius is slightly larger to better match whole-body reach context.
+  const innerRx = Math.max(24, refW * innerScale);
+  const innerRy = Math.max(36, innerRx * 1.22);
+  const outerRx = Math.max(innerRx + 20, refW * outerScale);
+  const outerRy = Math.max(innerRy + 30, outerRx * 1.22);
+
+  // Build outer ellipse, then subtract inner ellipse => independent far-distance band.
+  mctx.fillStyle = "#fff";
+  mctx.beginPath();
+  mctx.ellipse(center.x, center.y, outerRx, outerRy, 0, 0, Math.PI * 2);
+  mctx.fill();
+
+  mctx.globalCompositeOperation = "destination-out";
+  mctx.beginPath();
+  mctx.ellipse(center.x, center.y, innerRx, innerRy, 0, 0, Math.PI * 2);
+  mctx.fill();
+  mctx.globalCompositeOperation = "source-over";
+
+  return { mask, center, innerRx, innerRy, outerRx, outerRy };
+}
+
+function drawFarSpaceBoundary(meta) {
+  if (!meta) return;
+  ctx.save();
+  ctx.setLineDash([10, 8]);
+  ctx.lineWidth = Math.max(1.5, canvas.width / 650);
+
+  ctx.strokeStyle = "rgba(110, 175, 255, .88)";
+  ctx.beginPath();
+  ctx.ellipse(meta.center.x, meta.center.y, meta.outerRx, meta.outerRy, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.strokeStyle = "rgba(90, 145, 235, .62)";
+  ctx.beginPath();
+  ctx.ellipse(meta.center.x, meta.center.y, meta.innerRx, meta.innerRy, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawSpaceZones(lm, result = null) {
   const b = bodyBounds(lm);
   if (!b) return;
@@ -1392,16 +1468,18 @@ function drawSpaceZones(lm, result = null) {
     : buildBodyMask(lm, b, ppsMargin);
   const priorityMask = buildPrioritySensoryMask(lm, ppsMargin);
   const ppsMask = mergeMaskCanvases(basePpsMask, priorityMask);
-
-  // FAR SPACE = everything outside the PPS envelope.
+  // V22 FAR SPACE: independently estimated from trunk-centered distance.
+  // It is NOT computed as "everything outside PPS".
+  const farSpace = buildIndependentFarSpaceMask(lm, b, refW);
   const farLayer = newMaskCanvas();
   const fctx = farLayer.getContext("2d");
-  fctx.fillStyle = "rgba(70, 125, 235, 0.17)";
+  fctx.drawImage(farSpace.mask, 0, 0);
+  fctx.globalCompositeOperation = "source-in";
+  fctx.fillStyle = "rgba(70, 125, 235, 0.18)";
   fctx.fillRect(0, 0, farLayer.width, farLayer.height);
-  fctx.globalCompositeOperation = "destination-out";
-  fctx.drawImage(ppsMask, 0, 0);
   fctx.globalCompositeOperation = "source-over";
   ctx.drawImage(farLayer, 0, 0);
+  drawFarSpaceBoundary(farSpace);
 
   // Draw a subtle PPS outer boundary so the far/peripersonal transition
   // remains visible even on bright backgrounds.
@@ -1439,7 +1517,7 @@ function drawSpaceZones(lm, result = null) {
                clamp(b.minY - ppsMargin * 0.45, 8, canvas.height - 26));
 
   ctx.fillStyle = "rgba(170, 205, 255, 1)";
-  ctx.fillText("遠體", 12, canvas.height - fontSize - 12);
+  ctx.fillText("遠體（獨立距離場）", 12, canvas.height - fontSize - 12);
   ctx.restore();
 
   drawSpaceLabelsNearHead(lm);
@@ -2787,6 +2865,18 @@ function updateSensoryStrengthLabel() {
 sensoryStrengthEl?.addEventListener("input", updateSensoryStrengthLabel);
 updateSensoryStrengthLabel();
 
+function updateFarSpaceLabels() {
+  if (farInnerScaleEl && farInnerScaleValueEl) {
+    farInnerScaleValueEl.textContent = `${Number(farInnerScaleEl.value).toFixed(2)} × 身寬`;
+  }
+  if (farOuterScaleEl && farOuterScaleValueEl) {
+    farOuterScaleValueEl.textContent = `${Number(farOuterScaleEl.value).toFixed(2)} × 身寬`;
+  }
+}
+farInnerScaleEl?.addEventListener("input", updateFarSpaceLabels);
+farOuterScaleEl?.addEventListener("input", updateFarSpaceLabels);
+updateFarSpaceLabels();
+
 qualityModeEl?.addEventListener("change", applyQualityMode);
 applyQualityMode();
 
@@ -2819,4 +2909,4 @@ window.addEventListener("pagehide", () => {
   if (running || stream) stopTracks();
 });
 
-setStatus("等待啟動", "V21 Stable：以可用 V17 為基礎，新增臉／手／腳優先顯示與局部 PPS 加強。");
+setStatus("等待啟動", "V22：遠體空間改為軀幹中心＋身寬的獨立距離場，不再使用 PPS 排除法。");

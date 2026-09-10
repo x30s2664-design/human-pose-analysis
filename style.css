@@ -545,3 +545,21 @@ body.analysis-fullscreen .analysis-hud {
     grid-template-columns: 1fr;
   }
 }
+
+/* V22: independent far-space controls */
+.far-controls {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  background: #1d2430;
+  border: 1px solid #34507b;
+  border-radius: 12px;
+}
+.far-controls > strong {
+  color: #a9caff;
+}
+.far-note {
+  color: #aab7ca;
+  line-height: 1.5;
+}
