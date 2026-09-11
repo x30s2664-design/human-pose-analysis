@@ -545,3 +545,13 @@ V25 不改變 V24 的遠體幾何計算，只修改遠體視覺辨識：
 - 遠體外緣提示同步加深。
 - 遠體幾何不變：仍由黃色 PPS 外輪廓向外延伸。
 - 本體、PPS、持物與全螢幕功能不變。
+
+
+## V27.1：前／後鏡頭切換修正
+
+- 切換鏡頭時不再使用 `video: true` 靜默 fallback，避免切換失敗卻又回到前鏡頭。
+- 優先依 `enumerateDevices()` 的 camera label 尋找 `front/back/rear/environment` 對應鏡頭並用 `deviceId` 精準切換。
+- 若裝置沒有可辨識 label，改用 `facingMode: { exact: "user/environment" }`。
+- Samsung / Android 切換時先釋放目前相機，避免部分手機無法同時開啟前後鏡頭。
+- 切換完成後會讀取 `track.getSettings()` 與相機 label 驗證實際鏡頭方向；只有符合要求才顯示「相機已切換 ✓」。
+- 切換失敗會嘗試恢復原鏡頭，並明確顯示失敗原因，不再誤報成功。

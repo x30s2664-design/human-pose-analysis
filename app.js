@@ -2069,20 +2069,65 @@ async function initPoseModel() {
   setStatus("模型已就緒 ✓", "請允許瀏覽器使用相機。");
 }
 
+async function getVideoCameras() {
+  if (!navigator.mediaDevices?.enumerateDevices) return [];
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter(d => d.kind === "videoinput");
+}
+
+function cameraFacingFromText(text = "") {
+  const t = String(text).toLowerCase();
+  if (/\b(back|rear|environment|world)\b|後鏡|背面|後置/.test(t)) return "environment";
+  if (/\b(front|user|face)\b|前鏡|前置|自拍/.test(t)) return "user";
+  return "";
+}
+
+async function inferCameraFacing(track, requestedFacing = "", requestedDeviceId = "") {
+  const settings = track?.getSettings?.() || {};
+  const direct = cameraFacingFromText(settings.facingMode || "");
+  if (direct) return direct;
+
+  try {
+    const cams = await getVideoCameras();
+    const id = settings.deviceId || requestedDeviceId;
+    const match = cams.find(c => c.deviceId === id);
+    const byLabel = cameraFacingFromText(match?.label || track?.label || "");
+    if (byLabel) return byLabel;
+  } catch (_) {}
+
+  // If an exact device/facing request succeeded but the browser does not expose
+  // facingMode, treat the requested side as the best available verified value.
+  return requestedFacing || "";
+}
+
+async function findCameraDeviceId(targetFacing, excludeDeviceId = "") {
+  try {
+    const cams = await getVideoCameras();
+    const matches = cams.filter(cam => {
+      if (!cam.deviceId || cam.deviceId === excludeDeviceId) return false;
+      return cameraFacingFromText(cam.label) === targetFacing;
+    });
+    return matches[0]?.deviceId || "";
+  } catch (err) {
+    console.warn("Unable to find camera by label", err);
+    return "";
+  }
+}
+
 async function listCameras() {
   if (!navigator.mediaDevices?.enumerateDevices) return;
 
   try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const cams = devices.filter(d => d.kind === "videoinput");
-
+    const cams = await getVideoCameras();
     const currentId = stream?.getVideoTracks?.()[0]?.getSettings?.().deviceId || "";
     cameraSelect.innerHTML = "";
 
     cams.forEach((cam, index) => {
       const option = document.createElement("option");
       option.value = cam.deviceId;
-      option.textContent = cam.label || `相機 ${index + 1}`;
+      const side = cameraFacingFromText(cam.label);
+      const sideText = side === "environment" ? "後鏡頭" : side === "user" ? "前鏡頭" : "";
+      option.textContent = cam.label || `相機 ${index + 1}${sideText ? `（${sideText}）` : ""}`;
       if (cam.deviceId === currentId) option.selected = true;
       cameraSelect.appendChild(option);
     });
@@ -2102,54 +2147,104 @@ function stopTracks() {
   video.srcObject = null;
 }
 
-async function openCamera({ deviceId = "", facing = facingMode } = {}) {
-  setStatus("正在開啟相機…", "若瀏覽器詢問權限，請選「允許」。");
+async function attachCameraStream(nextStream, { requestedFacing = "", requestedDeviceId = "" } = {}) {
+  video.srcObject = nextStream;
+  video.muted = true;
+  video.setAttribute("playsinline", "");
+  await video.play();
+  await new Promise(resolve => {
+    if (video.readyState >= 2 && video.videoWidth > 0) return resolve();
+    video.addEventListener("loadedmetadata", resolve, { once: true });
+  });
 
-  const baseVideo = {
-    width: { ideal: 960 }, height: { ideal: 720 },
-    frameRate: { ideal: 24, max: 30 }
-  };
-  if (deviceId) baseVideo.deviceId = { exact: deviceId };
-  else baseVideo.facingMode = { ideal: facing };
-
-  let nextStream;
-  try {
-    nextStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: baseVideo });
-  } catch (firstError) {
-    console.warn("Preferred camera constraints failed, retrying basic video.", firstError);
-    nextStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
-  }
-
-  const previousStream = stream;
-  try {
-    video.srcObject = nextStream;
-    video.muted = true;
-    video.setAttribute("playsinline", "");
-    await video.play();
-    await new Promise(resolve => {
-      if (video.readyState >= 2 && video.videoWidth > 0) return resolve();
-      video.addEventListener("loadedmetadata", resolve, { once: true });
-    });
-    stream = nextStream;
-    previousStream?.getTracks?.().forEach(track => track.stop());
-  } catch (err) {
-    nextStream?.getTracks?.().forEach(track => track.stop());
-    video.srcObject = previousStream || null;
-    if (previousStream) { try { await video.play(); } catch (_) {} }
-    throw err;
-  }
-
+  stream = nextStream;
   canvas.width = video.videoWidth || 640;
   canvas.height = video.videoHeight || 480;
-  const settings = stream.getVideoTracks()[0]?.getSettings?.() || {};
-  if (settings.facingMode) facingMode = settings.facingMode;
-  else if (!deviceId) facingMode = facing;
+
+  const track = stream.getVideoTracks()[0];
+  const actualFacing = await inferCameraFacing(track, requestedFacing, requestedDeviceId);
+  if (actualFacing) facingMode = actualFacing;
+
   const mirror = facingMode !== "environment";
   video.style.transform = mirror ? "scaleX(-1)" : "none";
   canvas.style.transform = mirror ? "scaleX(-1)" : "none";
   placeholder.hidden = true;
   placeholder.style.display = "none";
   await listCameras();
+
+  return {
+    facing: actualFacing,
+    deviceId: track?.getSettings?.().deviceId || requestedDeviceId || ""
+  };
+}
+
+async function openCamera({
+  deviceId = "",
+  facing = facingMode,
+  strict = false,
+  stopCurrentFirst = false
+} = {}) {
+  setStatus("正在開啟相機…", "若瀏覽器詢問權限，請選「允許」。");
+
+  const previousStream = stream;
+  if (stopCurrentFirst) stopTracks();
+
+  const baseVideo = {
+    width: { ideal: 960 },
+    height: { ideal: 720 },
+    frameRate: { ideal: 24, max: 30 }
+  };
+
+  if (deviceId) {
+    baseVideo.deviceId = { exact: deviceId };
+  } else if (strict) {
+    baseVideo.facingMode = { exact: facing };
+  } else {
+    baseVideo.facingMode = { ideal: facing };
+  }
+
+  let nextStream;
+  try {
+    nextStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: baseVideo });
+  } catch (firstError) {
+    // Only the initial/non-strict camera opening may fall back to the browser's
+    // default camera. A camera switch must never silently fall back to front.
+    if (strict || deviceId) throw firstError;
+    console.warn("Preferred camera constraints failed, retrying basic video.", firstError);
+    nextStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+  }
+
+  try {
+    const info = await attachCameraStream(nextStream, {
+      requestedFacing: facing,
+      requestedDeviceId: deviceId
+    });
+
+    if (!stopCurrentFirst && previousStream && previousStream !== nextStream) {
+      previousStream.getTracks().forEach(track => track.stop());
+    }
+
+    if (strict && facing && info.facing && info.facing !== facing) {
+      throw new DOMException(
+        `瀏覽器實際開啟${info.facing === "environment" ? "後" : "前"}鏡頭，與要求的${facing === "environment" ? "後" : "前"}鏡頭不符。`,
+        "OverconstrainedError"
+      );
+    }
+
+    return info;
+  } catch (err) {
+    nextStream?.getTracks?.().forEach(track => track.stop());
+    if (stream === nextStream) stream = null;
+    video.srcObject = null;
+
+    // For non-switch use, preserve the old camera if it was kept alive.
+    if (!stopCurrentFirst && previousStream?.active) {
+      stream = previousStream;
+      video.srcObject = previousStream;
+      try { await video.play(); } catch (_) {}
+    }
+    throw err;
+  }
 }
 
 async function startAnalysis() {
@@ -2243,44 +2338,133 @@ function stopAnalysis() {
   setStatus("已停止", "按「啟動分析」可再次開始。");
 }
 
+async function restorePreviousCamera(previousDeviceId, previousFacing) {
+  try {
+    if (previousDeviceId) {
+      await openCamera({
+        deviceId: previousDeviceId,
+        facing: previousFacing,
+        strict: false,
+        stopCurrentFirst: true
+      });
+      return true;
+    }
+    await openCamera({ facing: previousFacing || "user", strict: false, stopCurrentFirst: true });
+    return true;
+  } catch (restoreError) {
+    console.error("Restore previous camera failed", restoreError);
+    return false;
+  }
+}
+
 async function switchCameraByFacing() {
   if (!running) return;
 
-  const requestedFacing = facingMode === "user" ? "environment" : "user";
+  const currentTrack = stream?.getVideoTracks?.()[0];
+  const currentSettings = currentTrack?.getSettings?.() || {};
+  const currentDeviceId = currentSettings.deviceId || "";
+  const currentFacing = (await inferCameraFacing(currentTrack, facingMode, currentDeviceId)) || facingMode || "user";
+  const requestedFacing = currentFacing === "environment" ? "user" : "environment";
+
   running = false;
+  if (animationId) cancelAnimationFrame(animationId);
+  animationId = null;
+  setStatus("正在切換相機…", requestedFacing === "environment" ? "正在尋找後鏡頭" : "正在尋找前鏡頭");
 
   try {
-    await openCamera({ facing: requestedFacing });
+    // Samsung/Android often exposes useful labels such as "facing back/front".
+    // Prefer the exact target deviceId when available.
+    const targetDeviceId = await findCameraDeviceId(requestedFacing, currentDeviceId);
+
+    let info;
+    if (targetDeviceId) {
+      info = await openCamera({
+        deviceId: targetDeviceId,
+        facing: requestedFacing,
+        strict: true,
+        stopCurrentFirst: true
+      });
+    } else {
+      // Some phones cannot open front + rear cameras simultaneously, so release
+      // the current camera before asking for an exact facingMode.
+      info = await openCamera({
+        facing: requestedFacing,
+        strict: true,
+        stopCurrentFirst: true
+      });
+    }
+
+    if (info.facing && info.facing !== requestedFacing) {
+      throw new DOMException("實際鏡頭方向與要求不符。", "OverconstrainedError");
+    }
+
     running = true;
     lastVideoTime = -1;
     lastInferenceAt = 0;
-    setStatus("已切換相機 ✓", facingMode === "environment" ? "目前偏好後鏡頭" : "目前偏好前鏡頭");
+    setStatus(
+      "相機已切換 ✓",
+      requestedFacing === "environment" ? "目前使用後鏡頭" : "目前使用前鏡頭"
+    );
     animationId = requestAnimationFrame(predict);
   } catch (err) {
-    console.error(err);
-    setStatus("切換相機失敗", friendlyError(err));
-    running = !!stream?.active;
-    if (running) animationId = requestAnimationFrame(predict);
+    console.error("Camera switch failed", err);
+    const restored = await restorePreviousCamera(currentDeviceId, currentFacing);
+    running = restored && !!stream?.active;
+    setStatus(
+      "切換相機失敗",
+      restored
+        ? `${friendlyError(err)} 已恢復原鏡頭。`
+        : `${friendlyError(err)} 原鏡頭也無法恢復，請重新啟動分析。`
+    );
+    if (running) {
+      lastVideoTime = -1;
+      lastInferenceAt = 0;
+      animationId = requestAnimationFrame(predict);
+    }
   }
 }
 
 async function switchCameraByDevice() {
   if (!running || !cameraSelect.value) return;
 
+  const currentTrack = stream?.getVideoTracks?.()[0];
+  const currentSettings = currentTrack?.getSettings?.() || {};
+  const previousDeviceId = currentSettings.deviceId || "";
+  const previousFacing = (await inferCameraFacing(currentTrack, facingMode, previousDeviceId)) || facingMode || "user";
+  const selected = cameraSelect.options[cameraSelect.selectedIndex];
+  const requestedFacing = cameraFacingFromText(selected?.textContent || "");
+
   running = false;
+  if (animationId) cancelAnimationFrame(animationId);
+  animationId = null;
 
   try {
-    await openCamera({ deviceId: cameraSelect.value });
+    const info = await openCamera({
+      deviceId: cameraSelect.value,
+      facing: requestedFacing || facingMode,
+      strict: !!requestedFacing,
+      stopCurrentFirst: true
+    });
+
+    if (requestedFacing && info.facing && info.facing !== requestedFacing) {
+      throw new DOMException("實際鏡頭方向與選擇不符。", "OverconstrainedError");
+    }
+
     running = true;
     lastVideoTime = -1;
     lastInferenceAt = 0;
-    setStatus("相機已切換 ✓");
+    setStatus("相機已切換 ✓", requestedFacing === "environment" ? "目前使用後鏡頭" : requestedFacing === "user" ? "目前使用前鏡頭" : "已使用選定相機");
     animationId = requestAnimationFrame(predict);
   } catch (err) {
-    console.error(err);
-    setStatus("切換相機失敗", friendlyError(err));
-    running = !!stream?.active;
-    if (running) animationId = requestAnimationFrame(predict);
+    console.error("Device camera switch failed", err);
+    const restored = await restorePreviousCamera(previousDeviceId, previousFacing);
+    running = restored && !!stream?.active;
+    setStatus("切換相機失敗", restored ? `${friendlyError(err)} 已恢復原鏡頭。` : friendlyError(err));
+    if (running) {
+      lastVideoTime = -1;
+      lastInferenceAt = 0;
+      animationId = requestAnimationFrame(predict);
+    }
   }
 }
 
