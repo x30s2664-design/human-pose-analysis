@@ -1,3 +1,7 @@
+# V27 reliability patch
+
+This revision prioritizes single-person consistency, safer camera switching, a more conservative held-object detector threshold, and a smoothed 2D estimated weight-bearing side. The weight-bearing value remains a 2D image estimate and is not a clinical force/pressure measurement.
+
 # 人體姿態即時分析 — Mobile / Tablet V2
 
 此版本專門調整為 GitHub Pages 上的手機／平板瀏覽器使用。

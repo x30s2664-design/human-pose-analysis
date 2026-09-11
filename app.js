@@ -340,17 +340,25 @@ function headDirection(lm) {
   return "FORWARD";
 }
 
+let supportSideHistory = [];
 function supportLeg(lm) {
-  if (![23, 24, 27, 28].every(i => visible(lm, i))) return "UNKNOWN";
+  // 2D estimate only: compare trunk center with each foot support polygon.
+  const required = [11, 12, 23, 24, 27, 28, 31, 32];
+  if (!required.every(i => visible(lm, i, 0.30))) return "資料不足";
 
-  const hipMidX = (lm[23].x + lm[24].x) / 2;
-  const leftD = Math.abs(hipMidX - lm[27].x);
-  const rightD = Math.abs(hipMidX - lm[28].x);
-  const margin = 0.018;
+  const trunkX = (lm[11].x + lm[12].x + lm[23].x + lm[24].x) / 4;
+  const leftFootX = (lm[27].x + lm[31].x) / 2;
+  const rightFootX = (lm[28].x + lm[32].x) / 2;
+  const leftD = Math.abs(trunkX - leftFootX);
+  const rightD = Math.abs(trunkX - rightFootX);
+  const stance = Math.max(0.025, Math.abs(leftFootX - rightFootX));
+  const margin = Math.max(0.012, stance * 0.12);
+  const raw = leftD + margin < rightD ? "LEFT" : rightD + margin < leftD ? "RIGHT" : "BOTH";
 
-  if (leftD + margin < rightD) return "LEFT";
-  if (rightD + margin < leftD) return "RIGHT";
-  return "BOTH";
+  supportSideHistory.push(raw);
+  if (supportSideHistory.length > 7) supportSideHistory.shift();
+  const counts = supportSideHistory.reduce((m, v) => (m[v] = (m[v] || 0) + 1, m), {});
+  return Object.entries(counts).sort((a,b) => b[1] - a[1])[0]?.[0] || raw;
 }
 
 
@@ -1778,7 +1786,7 @@ async function initObjectDetector() {
         modelAssetPath: OBJECT_MODEL_URL
       },
       runningMode: "VIDEO",
-      scoreThreshold: 0.18,
+      scoreThreshold: 0.28,
       maxResults: 12
     });
 
@@ -2051,7 +2059,7 @@ async function initPoseModel() {
 
   await poseLandmarker.setOptions({
     runningMode: "VIDEO",
-    numPoses: 2,
+    numPoses: 1,
     minPoseDetectionConfidence: 0.45,
     minPosePresenceConfidence: 0.45,
     minTrackingConfidence: 0.45,
@@ -2095,59 +2103,50 @@ function stopTracks() {
 }
 
 async function openCamera({ deviceId = "", facing = facingMode } = {}) {
-  stopTracks();
-
   setStatus("正在開啟相機…", "若瀏覽器詢問權限，請選「允許」。");
 
   const baseVideo = {
-    width: { ideal: 960 },
-    height: { ideal: 720 },
+    width: { ideal: 960 }, height: { ideal: 720 },
     frameRate: { ideal: 24, max: 30 }
   };
+  if (deviceId) baseVideo.deviceId = { exact: deviceId };
+  else baseVideo.facingMode = { ideal: facing };
 
-  if (deviceId) {
-    baseVideo.deviceId = { exact: deviceId };
-  } else {
-    baseVideo.facingMode = { ideal: facing };
-  }
-
+  let nextStream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: baseVideo
-    });
+    nextStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: baseVideo });
   } catch (firstError) {
     console.warn("Preferred camera constraints failed, retrying basic video.", firstError);
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: true
-    });
+    nextStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
   }
 
-  video.srcObject = stream;
-  video.muted = true;
-  video.setAttribute("playsinline", "");
-  await video.play();
-
-  await new Promise(resolve => {
-    if (video.readyState >= 2 && video.videoWidth > 0) {
-      resolve();
-      return;
-    }
-    video.addEventListener("loadedmetadata", resolve, { once: true });
-  });
+  const previousStream = stream;
+  try {
+    video.srcObject = nextStream;
+    video.muted = true;
+    video.setAttribute("playsinline", "");
+    await video.play();
+    await new Promise(resolve => {
+      if (video.readyState >= 2 && video.videoWidth > 0) return resolve();
+      video.addEventListener("loadedmetadata", resolve, { once: true });
+    });
+    stream = nextStream;
+    previousStream?.getTracks?.().forEach(track => track.stop());
+  } catch (err) {
+    nextStream?.getTracks?.().forEach(track => track.stop());
+    video.srcObject = previousStream || null;
+    if (previousStream) { try { await video.play(); } catch (_) {} }
+    throw err;
+  }
 
   canvas.width = video.videoWidth || 640;
   canvas.height = video.videoHeight || 480;
-
   const settings = stream.getVideoTracks()[0]?.getSettings?.() || {};
   if (settings.facingMode) facingMode = settings.facingMode;
-
-  // Front camera is mirrored for natural selfie behavior; rear camera is not.
+  else if (!deviceId) facingMode = facing;
   const mirror = facingMode !== "environment";
   video.style.transform = mirror ? "scaleX(-1)" : "none";
   canvas.style.transform = mirror ? "scaleX(-1)" : "none";
-
   placeholder.hidden = true;
   placeholder.style.display = "none";
   await listCameras();
@@ -2226,6 +2225,7 @@ function stopAnalysis() {
   latestPoseLandmarks = null;
   latestHands = [];
   lastHandDetectionAt = 0;
+  supportSideHistory = [];
   manualObjectBox = null;
   endManualBoxMode();
   if (objectDetectionStatusEl) {
@@ -2246,11 +2246,11 @@ function stopAnalysis() {
 async function switchCameraByFacing() {
   if (!running) return;
 
-  facingMode = facingMode === "user" ? "environment" : "user";
+  const requestedFacing = facingMode === "user" ? "environment" : "user";
   running = false;
 
   try {
-    await openCamera({ facing: facingMode });
+    await openCamera({ facing: requestedFacing });
     running = true;
     lastVideoTime = -1;
     lastInferenceAt = 0;
@@ -2259,8 +2259,8 @@ async function switchCameraByFacing() {
   } catch (err) {
     console.error(err);
     setStatus("切換相機失敗", friendlyError(err));
-    running = true;
-    animationId = requestAnimationFrame(predict);
+    running = !!stream?.active;
+    if (running) animationId = requestAnimationFrame(predict);
   }
 }
 
@@ -2279,8 +2279,8 @@ async function switchCameraByDevice() {
   } catch (err) {
     console.error(err);
     setStatus("切換相機失敗", friendlyError(err));
-    running = true;
-    animationId = requestAnimationFrame(predict);
+    running = !!stream?.active;
+    if (running) animationId = requestAnimationFrame(predict);
   }
 }
 
